@@ -132,7 +132,7 @@ function iso8601ParaSegundos(iso) {
 function lerDuracaoDeArquivo(track) {
     return new Promise(resolve => {
         const link = ((track && track.link) || '').trim();
-        const ehArquivo = /\.(mp4|mkv|webm|mov|mp3|wav|aac|m4a|ape|ogg|oga|opus|wma|mp2|flac)(\?|$)/i.test(link) || link.includes('raw.githubusercontent');
+        const ehArquivo = (/\.(mp4|mkv|webm|mov|m4v|avi|flv|ogv)(\?|$)/i.test(link) || ehArquivoDeAudio(link)) || link.includes('raw.githubusercontent');
         if (!ehArquivo) { duracoesCache[chaveDuracao(track)] = null; return resolve(); }
         const el = document.createElement(ehArquivoDeAudio(link) ? 'audio' : 'video');
         let encerrado = false;
@@ -3007,7 +3007,8 @@ function castTipoDaFonte(link) {
     const vId = (typeof extractYoutubeId === "function") ? extractYoutubeId(link) : null;
     const plId = (typeof extractPlaylistId === "function") ? extractPlaylistId(link) : null;
     if (vId || plId || url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
-    if (/\.(mp4|m4v|webm|ogv|mov|mkv|mp3|m4a|aac|ogg|m3u8|mpd|flv|avi|wav|opus)(\?|$)/.test(url)) return "media";
+    if (/\.(mp4|m4v|webm|ogv|mov|mkv|m3u8|mpd|flv|avi)(\?|$)/.test(url)) return "media";
+    if (typeof ehArquivoDeAudio === "function" && ehArquivoDeAudio(url)) return "media";
     if (url.includes("raw.githubusercontent") || url.includes("docs.google.com/uc?export=download")) return "media";
     if (url.includes("drive.google.com/file/d/")) return "media";
     if (/^https?:\/\//.test(url)) return "media"; // tentativa universal: qualquer link é enviado ao receptor
@@ -3020,9 +3021,10 @@ function castMimeDoArquivo(link) {
     if (url.includes(".mpd")) return "application/dash+xml";
     if (url.includes(".webm")) return "video/webm";
     if (url.includes(".mkv")) return "video/x-matroska";
-    if (url.includes(".mp3")) return "audio/mpeg";
-    if (url.includes(".m4a") || url.includes(".aac")) return "audio/mp4";
-    if (url.includes(".ogg") || url.includes(".ogv")) return "video/ogg";
+    if (url.includes(".ogv")) return "video/ogg";
+    if (typeof ehArquivoDeAudio === "function" && ehArquivoDeAudio(url)) {
+        return (typeof mimeDoAudio === "function" && mimeDoAudio(url)) || "audio/mpeg";
+    }
     return "video/mp4";
 }
 
@@ -4621,8 +4623,55 @@ document.addEventListener('DOMContentLoaded', atualizarBotaoFavoritoDoPlayer);
    3) logo do StreamHub como último recurso
    ========================================== */
 
-const EXTENSOES_AUDIO = ['mp3','wav','aac','m4a','ape','ogg','oga','opus','wma','mp2','mpga','flac','aif','aiff'];
-const EXTENSOES_AUDIO_LIMITADAS = ['ape','wma','mp2','aif','aiff'];
+const EXTENSOES_AUDIO = [
+    'mp3','mpga','mp2','wav','wave','flac','aac','m4a','m4b','mp4a','alac',
+    'ogg','oga','opus','spx','weba','webma','wma','ape','aif','aiff','aifc',
+    'amr','au','snd','caf','dsf','dff','wv','mpc','mka','ra','ram','mid','midi','3ga'
+];
+// Formatos que a maioria dos navegadores NÃO decodifica nativamente
+const EXTENSOES_AUDIO_LIMITADAS = ['ape','wma','wv','mpc','dsf','dff','ra','ram','mid','midi','mp2','aif','aiff','aifc','au','snd','caf','amr'];
+
+// MIME correto por extensão: sem isso alguns servidores entregam
+// "application/octet-stream" e o navegador recusa arquivos válidos (ex.: FLAC).
+const MIME_AUDIO = {
+    mp3: 'audio/mpeg', mpga: 'audio/mpeg', mp2: 'audio/mpeg',
+    wav: 'audio/wav', wave: 'audio/wav',
+    flac: 'audio/flac',
+    aac: 'audio/aac',
+    m4a: 'audio/mp4', m4b: 'audio/mp4', mp4a: 'audio/mp4', alac: 'audio/mp4',
+    ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg; codecs=opus', spx: 'audio/ogg',
+    weba: 'audio/webm', webma: 'audio/webm', mka: 'audio/webm',
+    wma: 'audio/x-ms-wma', ape: 'audio/x-ape', wv: 'audio/x-wavpack', mpc: 'audio/x-musepack',
+    aif: 'audio/aiff', aiff: 'audio/aiff', aifc: 'audio/aiff',
+    amr: 'audio/amr', au: 'audio/basic', snd: 'audio/basic', caf: 'audio/x-caf',
+    dsf: 'audio/x-dsf', dff: 'audio/x-dff', ra: 'audio/vnd.rn-realaudio', ram: 'audio/vnd.rn-realaudio',
+    mid: 'audio/midi', midi: 'audio/midi', '3ga': 'audio/3gpp'
+};
+
+function mimeDoAudio(url) {
+    return MIME_AUDIO[extensaoDoArquivo(url)] || '';
+}
+
+// O navegador consegue tocar este arquivo?
+function navegadorSuportaAudio(url) {
+    try {
+        const teste = document.createElement('audio');
+        const mime = mimeDoAudio(url);
+        if (!mime) return true;
+        if (teste.canPlayType(mime)) return true;
+        // alguns navegadores só respondem ao MIME alternativo
+        const alternativos = {
+            'audio/flac': ['audio/x-flac', 'audio/ogg; codecs=flac'],
+            'audio/wav': ['audio/x-wav', 'audio/wave', 'audio/vnd.wave'],
+            'audio/aac': ['audio/mp4; codecs=mp4a.40.2', 'audio/aacp'],
+            'audio/mp4': ['audio/mp4; codecs=mp4a.40.2', 'audio/x-m4a'],
+            'audio/mpeg': ['audio/mp3']
+        };
+        const lista = alternativos[mime] || [];
+        for (let i = 0; i < lista.length; i++) { if (teste.canPlayType(lista[i])) return true; }
+        return false;
+    } catch (e) { return true; }
+}
 
 function extensaoDoArquivo(url) {
     try {
@@ -4727,16 +4776,42 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
     rawPlayerEl.classList.remove('hidden');
     rawPlayerEl.classList.add('as-audio');
     rawPlayerEl.setAttribute('poster', '');
-    rawPlayerEl.src = link;
+
+    // Informa o tipo correto ao navegador (FLAC, OPUS, AAC etc.)
+    try { while (rawPlayerEl.firstChild) rawPlayerEl.removeChild(rawPlayerEl.firstChild); } catch (e) {}
+    try { rawPlayerEl.removeAttribute('src'); } catch (e) {}
+    const fonte = document.createElement('source');
+    fonte.src = link;
+    const mime = mimeDoAudio(link);
+    if (mime) fonte.type = mime;
+    fonte.onerror = () => { if (rawPlayerEl.onerror) rawPlayerEl.onerror(); };
+    rawPlayerEl.appendChild(fonte);
+    try { rawPlayerEl.load(); } catch (e) {}
+
     rawPlayerEl.onended = () => { avancarFaixa(); };
     rawPlayerEl.onerror = () => {
+        // 2ª tentativa: alguns servidores só funcionam com src direto (sem type)
+        if (!rawPlayerEl.dataset.tentativaDireta) {
+            rawPlayerEl.dataset.tentativaDireta = '1';
+            try { while (rawPlayerEl.firstChild) rawPlayerEl.removeChild(rawPlayerEl.firstChild); } catch (e) {}
+            rawPlayerEl.src = link;
+            try { rawPlayerEl.load(); } catch (e) {}
+            const p2 = rawPlayerEl.play();
+            if (p2 && p2.catch) p2.catch(() => {});
+            return;
+        }
         if (!aviso) return;
         aviso.classList.remove('hidden');
         const ext = extensaoDoArquivo(link).toUpperCase();
-        aviso.innerText = EXTENSOES_AUDIO_LIMITADAS.indexOf(extensaoDoArquivo(link)) !== -1
-            ? `Este navegador não reproduz o formato ${ext} nativamente. Converta para MP3, M4A, OGG ou WAV.`
-            : 'Não foi possível carregar este áudio. Verifique o link do arquivo.';
+        aviso.innerText = !navegadorSuportaAudio(link)
+            ? `Este navegador não reproduz o formato ${ext} nativamente. Converta para MP3, FLAC, M4A, OGG/OPUS ou WAV.`
+            : 'Não foi possível carregar este áudio. Verifique o link do arquivo (ou as permissões do servidor).';
     };
+    delete rawPlayerEl.dataset.tentativaDireta;
+    if (aviso && !navegadorSuportaAudio(link)) {
+        aviso.classList.remove('hidden');
+        aviso.innerText = `Formato ${extensaoDoArquivo(link).toUpperCase()} pode não ser suportado por este navegador. Tentando reproduzir mesmo assim...`;
+    }
     const promessa = rawPlayerEl.play();
     if (promessa && promessa.catch) promessa.catch(() => {});
     aplicarVolume();
