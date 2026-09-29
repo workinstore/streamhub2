@@ -4816,3 +4816,848 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
     if (promessa && promessa.catch) promessa.catch(() => {});
     aplicarVolume();
 }
+
+
+/* ==========================================================================
+   MODO "ACESSO SEM LOGIN" (MINI YOUTUBE)
+   Interface pública de navegação no YouTube usando a API Key global.
+   Funções do acervo (salvar mídias, favoritos, admin) exigem login.
+   ========================================================================== */
+(function () {
+    "use strict";
+
+    const YT_BASE = "https://www.googleapis.com/youtube/v3";
+    const GUEST_REGION = "BR";
+
+    const gs = {
+        montado: false,
+        ativo: false,
+        view: "home",
+        query: "",
+        filtro: "video",          // video | channel | playlist
+        nextPageToken: "",
+        contexto: null,           // dados da view atual (canal, playlist...)
+        carregando: false,
+        historico: []
+    };
+
+    // ---------- utilidades ----------
+
+    function chaveApi() {
+        return (typeof YT_API_KEY_GLOBAL !== "undefined" && YT_API_KEY_GLOBAL) ? YT_API_KEY_GLOBAL : (CONFIG && CONFIG.YT_API_KEY) || "";
+    }
+
+    async function ytApi(recurso, params) {
+        const url = new URL(`${YT_BASE}/${recurso}`);
+        Object.keys(params || {}).forEach(k => {
+            if (params[k] !== undefined && params[k] !== null && params[k] !== "") url.searchParams.set(k, params[k]);
+        });
+        url.searchParams.set("key", chaveApi());
+        const res = await fetch(url.toString());
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const motivo = data?.error?.errors?.[0]?.reason || data?.error?.message || `HTTP ${res.status}`;
+            throw new Error(motivo);
+        }
+        return data;
+    }
+
+    function esc(txt) {
+        return String(txt == null ? "" : txt)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function decodificarHtml(txt) {
+        const d = document.createElement("textarea");
+        d.innerHTML = String(txt == null ? "" : txt);
+        return d.value;
+    }
+
+    function thumbDe(snippet) {
+        const t = snippet?.thumbnails || {};
+        return (t.maxres || t.standard || t.high || t.medium || t.default || {}).url || "https://placehold.co/320x180?text=Sem+capa";
+    }
+
+    function numeroCompacto(valor) {
+        const n = Number(valor || 0);
+        if (!isFinite(n)) return "0";
+        if (n >= 1e9) return (n / 1e9).toFixed(1).replace(".0", "") + " bi";
+        if (n >= 1e6) return (n / 1e6).toFixed(1).replace(".0", "") + " mi";
+        if (n >= 1e3) return (n / 1e3).toFixed(1).replace(".0", "") + " mil";
+        return String(n);
+    }
+
+    function tempoRelativo(iso) {
+        if (!iso) return "";
+        const d = new Date(iso);
+        if (isNaN(d)) return "";
+        const seg = Math.max(1, Math.floor((Date.now() - d.getTime()) / 1000));
+        const faixas = [["ano", 31536000], ["mês", 2592000], ["semana", 604800], ["dia", 86400], ["hora", 3600], ["minuto", 60]];
+        for (const [nome, s] of faixas) {
+            const q = Math.floor(seg / s);
+            if (q >= 1) {
+                let plural = nome === "mês" ? "meses" : nome + "s";
+                return `há ${q} ${q > 1 ? plural : nome}`;
+            }
+        }
+        return "agora mesmo";
+    }
+
+    function duracaoLegivel(iso) {
+        if (!iso) return "";
+        const m = /P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/.exec(iso);
+        if (!m) return "";
+        const dias = +(m[1] || 0), h = +(m[2] || 0) + dias * 24, mi = +(m[3] || 0), s = +(m[4] || 0);
+        const p2 = (v) => String(v).padStart(2, "0");
+        return h > 0 ? `${h}:${p2(mi)}:${p2(s)}` : `${mi}:${p2(s)}`;
+    }
+
+    function idDoUploads(channelId) {
+        return channelId ? "UU" + channelId.slice(2) : "";
+    }
+
+    // ---------- bloqueio de recursos que exigem conta ----------
+
+    window.exigirLoginGuest = function (acao) {
+        const texto = acao ? `Para ${acao} é necessário entrar na sua conta.` : "Esta função é exclusiva para usuários com conta.";
+        const box = document.getElementById("guest-login-required");
+        if (box) {
+            box.querySelector(".guest-lr-text").innerText = texto;
+            box.classList.remove("hidden");
+        } else {
+            if (confirm(texto + "\n\nDeseja entrar ou criar sua conta agora?")) sairDoModoGuest("login");
+        }
+    };
+
+    function fecharAvisoLogin() {
+        document.getElementById("guest-login-required")?.classList.add("hidden");
+    }
+
+    // ---------- montagem da interface ----------
+
+    function montarInterface() {
+        if (gs.montado) return;
+
+        const wrap = document.createElement("div");
+        wrap.id = "guest-container";
+        wrap.className = "guest-wrapper hidden";
+        wrap.innerHTML = `
+            <header class="guest-header">
+                <div class="guest-header-left">
+                    <button class="guest-icon-btn guest-menu-btn" id="guest-btn-menu" title="Menu"><i class="fas fa-bars"></i></button>
+                    <div class="guest-brand" id="guest-brand" title="Início">
+                        <i class="fab fa-youtube"></i><span>StreamHub <small>Livre</small></span>
+                    </div>
+                </div>
+                <div class="guest-header-center">
+                    <div class="guest-searchbar">
+                        <input type="text" id="guest-search-input" placeholder="Pesquisar vídeos, canais ou playlists" autocomplete="off">
+                        <button id="guest-search-btn" title="Pesquisar"><i class="fas fa-search"></i></button>
+                    </div>
+                </div>
+                <div class="guest-header-right">
+                    <button class="guest-icon-btn guest-only-mobile" id="guest-btn-search-mobile" title="Pesquisar"><i class="fas fa-search"></i></button>
+                    <button class="guest-btn-login" id="guest-btn-entrar"><i class="fas fa-right-to-bracket"></i> <span>Entrar / Cadastrar</span></button>
+                </div>
+            </header>
+
+            <div class="guest-mobile-search hidden" id="guest-mobile-search">
+                <div class="guest-searchbar">
+                    <input type="text" id="guest-search-input-mobile" placeholder="Pesquisar no YouTube" autocomplete="off">
+                    <button id="guest-search-btn-mobile"><i class="fas fa-search"></i></button>
+                </div>
+            </div>
+
+            <div class="guest-body">
+                <aside class="guest-sidebar" id="guest-sidebar">
+                    <button class="guest-side-item active" data-guest-nav="home"><i class="fas fa-house"></i> Início</button>
+                    <button class="guest-side-item" data-guest-nav="trending"><i class="fas fa-fire"></i> Em alta</button>
+                    <button class="guest-side-item" data-guest-nav="music"><i class="fas fa-music"></i> Música</button>
+                    <button class="guest-side-item" data-guest-nav="gaming"><i class="fas fa-gamepad"></i> Games</button>
+                    <button class="guest-side-item" data-guest-nav="news"><i class="fas fa-newspaper"></i> Notícias</button>
+                    <button class="guest-side-item" data-guest-nav="sports"><i class="fas fa-futbol"></i> Esportes</button>
+                    <button class="guest-side-item" data-guest-nav="movies"><i class="fas fa-film"></i> Filmes</button>
+                    <hr class="guest-side-sep">
+                    <div class="guest-side-title">Sua conta</div>
+                    <button class="guest-side-item guest-locked" data-guest-locked="ver seu acervo pessoal"><i class="fas fa-photo-film"></i> Meu acervo <i class="fas fa-lock guest-lock-ico"></i></button>
+                    <button class="guest-side-item guest-locked" data-guest-locked="usar os favoritos"><i class="fas fa-heart"></i> Favoritos <i class="fas fa-lock guest-lock-ico"></i></button>
+                    <button class="guest-side-item guest-locked" data-guest-locked="salvar mídias na sua conta"><i class="fas fa-plus"></i> Adicionar mídia <i class="fas fa-lock guest-lock-ico"></i></button>
+                    <button class="guest-side-item guest-locked" data-guest-locked="vincular canais ao seu acervo"><i class="fas fa-tv"></i> Vincular canal <i class="fas fa-lock guest-lock-ico"></i></button>
+                    <hr class="guest-side-sep">
+                    <p class="guest-side-note">Você está navegando sem login. Crie sua conta gratuita para montar seu próprio acervo de mídias.</p>
+                    <button class="guest-side-cta" id="guest-side-cta">Criar minha conta</button>
+                </aside>
+
+                <main class="guest-main" id="guest-main">
+                    <div class="guest-chips" id="guest-chips"></div>
+                    <div id="guest-content" class="guest-content"></div>
+                    <div class="guest-loadmore-row" id="guest-loadmore-row"></div>
+                </main>
+            </div>
+
+            <div id="guest-login-required" class="guest-lr-overlay hidden">
+                <div class="guest-lr-box">
+                    <i class="fas fa-lock guest-lr-ico"></i>
+                    <h3>Recurso exclusivo para membros</h3>
+                    <p class="guest-lr-text"></p>
+                    <div class="guest-lr-actions">
+                        <button class="guest-lr-cancel" id="guest-lr-cancel">Continuar sem login</button>
+                        <button class="guest-lr-ok" id="guest-lr-login">Entrar</button>
+                        <button class="guest-lr-ok guest-lr-alt" id="guest-lr-signup">Criar conta</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(wrap);
+        gs.montado = true;
+        ligarEventos();
+    }
+
+    function ligarEventos() {
+        const $ = (id) => document.getElementById(id);
+
+        $("guest-brand").onclick = () => irPara("home");
+        $("guest-btn-menu").onclick = () => $("guest-sidebar").classList.toggle("open");
+        $("guest-btn-entrar").onclick = () => sairDoModoGuest("login");
+        $("guest-side-cta").onclick = () => sairDoModoGuest("cadastro");
+        $("guest-lr-cancel").onclick = fecharAvisoLogin;
+        $("guest-lr-login").onclick = () => { fecharAvisoLogin(); sairDoModoGuest("login"); };
+        $("guest-lr-signup").onclick = () => { fecharAvisoLogin(); sairDoModoGuest("cadastro"); };
+
+        const disparar = (inputId) => {
+            const v = ($(inputId)?.value || "").trim();
+            if (!v) return;
+            $("guest-sidebar").classList.remove("open");
+            $("guest-mobile-search").classList.add("hidden");
+            pesquisar(v, gs.filtro || "video");
+        };
+        $("guest-search-btn").onclick = () => disparar("guest-search-input");
+        $("guest-search-input").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); disparar("guest-search-input"); } };
+        $("guest-search-btn-mobile").onclick = () => disparar("guest-search-input-mobile");
+        $("guest-search-input-mobile").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); disparar("guest-search-input-mobile"); } };
+        $("guest-btn-search-mobile").onclick = () => $("guest-mobile-search").classList.toggle("hidden");
+
+        document.querySelectorAll("[data-guest-nav]").forEach(btn => {
+            btn.onclick = () => {
+                document.querySelectorAll("[data-guest-nav]").forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+                $("guest-sidebar").classList.remove("open");
+                irPara(btn.getAttribute("data-guest-nav"));
+            };
+        });
+        document.querySelectorAll("[data-guest-locked]").forEach(btn => {
+            btn.onclick = () => window.exigirLoginGuest(btn.getAttribute("data-guest-locked"));
+        });
+    }
+
+    // ---------- entrada / saída do modo ----------
+
+    window.abrirModoGuest = function () {
+        montarInterface();
+        document.getElementById("login-screen")?.classList.add("hidden");
+        document.getElementById("app-container")?.classList.add("hidden");
+        document.getElementById("guest-container")?.classList.remove("hidden");
+        document.body.classList.add("guest-mode-on");
+        gs.ativo = true;
+        irPara("home");
+    };
+
+    function sairDoModoGuest(aba) {
+        pararReproducao();
+        document.getElementById("guest-container")?.classList.add("hidden");
+        document.body.classList.remove("guest-mode-on");
+        gs.ativo = false;
+        const logado = (() => { try { return !!firebase.auth().currentUser; } catch (e) { return false; } })();
+        if (logado) {
+            document.getElementById("app-container")?.classList.remove("hidden");
+            return;
+        }
+        document.getElementById("login-screen")?.classList.remove("hidden");
+        if (typeof alternarAbasLogin === "function") alternarAbasLogin(aba === "cadastro" ? "cadastro" : "login");
+    }
+    window.sairDoModoGuest = sairDoModoGuest;
+
+    function pararReproducao() {
+        const f = document.getElementById("guest-watch-frame");
+        if (f) f.src = "about:blank";
+    }
+
+    // ---------- navegação ----------
+
+    const CHIPS = [
+        { rotulo: "Tudo", q: "" },
+        { rotulo: "Música", q: "música" },
+        { rotulo: "Podcasts", q: "podcast" },
+        { rotulo: "Shows ao vivo", q: "show ao vivo" },
+        { rotulo: "Notícias", q: "notícias" },
+        { rotulo: "Games", q: "gameplay" },
+        { rotulo: "Receitas", q: "receitas" },
+        { rotulo: "Documentários", q: "documentário" },
+        { rotulo: "Tecnologia", q: "tecnologia" },
+        { rotulo: "Humor", q: "humor" }
+    ];
+
+    const CATEGORIA_POR_NAV = { trending: "", music: "10", gaming: "20", news: "25", sports: "17", movies: "1" };
+
+    function irPara(nav) {
+        pararReproducao();
+        gs.nextPageToken = "";
+        if (nav === "home") { gs.view = "home"; renderChips(true); carregarPopulares(""); return; }
+        gs.view = "home";
+        renderChips(false);
+        carregarPopulares(CATEGORIA_POR_NAV[nav] || "");
+    }
+
+    function renderChips(mostrar) {
+        const box = document.getElementById("guest-chips");
+        if (!box) return;
+        if (!mostrar) { box.innerHTML = ""; box.classList.add("hidden"); return; }
+        box.classList.remove("hidden");
+        box.innerHTML = CHIPS.map((c, i) =>
+            `<button class="guest-chip ${i === 0 ? "active" : ""}" data-chip="${esc(c.q)}">${esc(c.rotulo)}</button>`).join("");
+        box.querySelectorAll("[data-chip]").forEach(btn => {
+            btn.onclick = () => {
+                box.querySelectorAll(".guest-chip").forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+                const q = btn.getAttribute("data-chip");
+                if (!q) { carregarPopulares(""); } else { pesquisar(q, "video", true); }
+            };
+        });
+    }
+
+    function conteudo() { return document.getElementById("guest-content"); }
+    function areaMais() { return document.getElementById("guest-loadmore-row"); }
+
+    function mostrarCarregando(texto) {
+        conteudo().innerHTML = `<div class="guest-loading"><i class="fas fa-circle-notch fa-spin"></i> ${esc(texto || "Carregando...")}</div>`;
+        areaMais().innerHTML = "";
+    }
+
+    function mostrarErro(e) {
+        conteudo().innerHTML = `
+            <div class="guest-error">
+                <i class="fas fa-triangle-exclamation"></i>
+                <h3>Não foi possível carregar o conteúdo</h3>
+                <p>${esc(e && e.message ? e.message : e)}</p>
+                <p class="guest-error-dica">Isso normalmente acontece quando a cota diária da chave do YouTube se esgota ou o domínio não está liberado na chave.</p>
+            </div>`;
+        areaMais().innerHTML = "";
+    }
+
+    function botaoCarregarMais(aoClicar) {
+        const area = areaMais();
+        if (!gs.nextPageToken) { area.innerHTML = ""; return; }
+        area.innerHTML = `<button class="guest-loadmore" id="guest-loadmore">Carregar mais</button>`;
+        document.getElementById("guest-loadmore").onclick = async (ev) => {
+            ev.currentTarget.innerText = "Carregando...";
+            ev.currentTarget.disabled = true;
+            await aoClicar();
+        };
+    }
+
+    // ---------- cards ----------
+
+    function cardVideo(v) {
+        const id = v.id;
+        const s = v.snippet || {};
+        const dur = v.contentDetails?.duration ? duracaoLegivel(v.contentDetails.duration) : "";
+        const views = v.statistics?.viewCount ? `${numeroCompacto(v.statistics.viewCount)} visualizações · ` : "";
+        return `
+        <article class="guest-card" data-video="${esc(id)}">
+            <div class="guest-thumb">
+                <img loading="lazy" src="${esc(thumbDe(s))}" alt="${esc(decodificarHtml(s.title))}">
+                ${dur ? `<span class="guest-dur">${esc(dur)}</span>` : ""}
+                <span class="guest-play"><i class="fas fa-play"></i></span>
+            </div>
+            <div class="guest-card-info">
+                <h4 title="${esc(decodificarHtml(s.title))}">${esc(decodificarHtml(s.title))}</h4>
+                <span class="guest-card-channel" data-channel="${esc(s.channelId || "")}">${esc(decodificarHtml(s.channelTitle))}</span>
+                <span class="guest-card-meta">${views}${esc(tempoRelativo(s.publishedAt))}</span>
+            </div>
+            <button class="guest-card-save guest-locked" data-guest-locked="salvar este vídeo no seu acervo" title="Salvar no meu acervo (requer conta)"><i class="fas fa-plus"></i></button>
+        </article>`;
+    }
+
+    function cardCanal(c) {
+        const s = c.snippet || {};
+        const id = c.id?.channelId || c.id;
+        const inscritos = c.statistics?.subscriberCount ? `${numeroCompacto(c.statistics.subscriberCount)} inscritos` : "Canal";
+        return `
+        <article class="guest-card guest-card-channel-item" data-channel="${esc(id)}">
+            <div class="guest-chan-avatar"><img loading="lazy" src="${esc(thumbDe(s))}" alt="${esc(decodificarHtml(s.title))}"></div>
+            <div class="guest-card-info">
+                <h4>${esc(decodificarHtml(s.title))}</h4>
+                <span class="guest-card-meta">${esc(inscritos)}</span>
+                <span class="guest-card-desc">${esc(decodificarHtml(s.description || "").slice(0, 110))}</span>
+            </div>
+        </article>`;
+    }
+
+    function cardPlaylist(p) {
+        const s = p.snippet || {};
+        const id = p.id?.playlistId || p.id;
+        const qtd = p.contentDetails?.itemCount != null ? `${p.contentDetails.itemCount} vídeos` : "Playlist";
+        return `
+        <article class="guest-card" data-playlist="${esc(id)}">
+            <div class="guest-thumb guest-thumb-playlist">
+                <img loading="lazy" src="${esc(thumbDe(s))}" alt="${esc(decodificarHtml(s.title))}">
+                <span class="guest-plbadge"><i class="fas fa-list"></i> ${esc(qtd)}</span>
+            </div>
+            <div class="guest-card-info">
+                <h4>${esc(decodificarHtml(s.title))}</h4>
+                <span class="guest-card-channel" data-channel="${esc(s.channelId || "")}">${esc(decodificarHtml(s.channelTitle))}</span>
+            </div>
+        </article>`;
+    }
+
+    function ligarCliquesDosCards(escopo) {
+        (escopo || document).querySelectorAll("[data-video]").forEach(el => {
+            el.onclick = (ev) => {
+                if (ev.target.closest("[data-guest-locked]")) return;
+                if (ev.target.closest("[data-channel]") && ev.target.closest("[data-channel]") !== el) return;
+                abrirVideo(el.getAttribute("data-video"));
+            };
+        });
+        (escopo || document).querySelectorAll("[data-channel]").forEach(el => {
+            el.onclick = (ev) => {
+                const id = el.getAttribute("data-channel");
+                if (!id) return;
+                ev.stopPropagation();
+                abrirCanal(id);
+            };
+        });
+        (escopo || document).querySelectorAll("[data-playlist]").forEach(el => {
+            el.onclick = (ev) => {
+                if (ev.target.closest("[data-channel]")) return;
+                abrirPlaylist(el.getAttribute("data-playlist"));
+            };
+        });
+        (escopo || document).querySelectorAll("[data-guest-locked]").forEach(btn => {
+            btn.onclick = (ev) => { ev.stopPropagation(); window.exigirLoginGuest(btn.getAttribute("data-guest-locked")); };
+        });
+    }
+
+    // ---------- home / populares ----------
+
+    async function carregarPopulares(categoriaId) {
+        gs.view = "home";
+        gs.nextPageToken = "";
+        mostrarCarregando("Carregando vídeos em alta...");
+        try {
+            const data = await ytApi("videos", {
+                part: "snippet,statistics,contentDetails",
+                chart: "mostPopular",
+                regionCode: GUEST_REGION,
+                videoCategoryId: categoriaId || "",
+                maxResults: 24
+            });
+            gs.nextPageToken = data.nextPageToken || "";
+            gs.contexto = { tipo: "populares", categoriaId };
+            conteudo().innerHTML = `
+                <h2 class="guest-section-title"><i class="fas fa-fire"></i> Em alta no YouTube</h2>
+                <div class="guest-grid" id="guest-grid">${(data.items || []).map(cardVideo).join("")}</div>`;
+            ligarCliquesDosCards(conteudo());
+            const maisPopulares = async () => {
+                const mais = await ytApi("videos", {
+                    part: "snippet,statistics,contentDetails", chart: "mostPopular", regionCode: GUEST_REGION,
+                    videoCategoryId: categoriaId || "", maxResults: 24, pageToken: gs.nextPageToken
+                });
+                gs.nextPageToken = mais.nextPageToken || "";
+                document.getElementById("guest-grid").insertAdjacentHTML("beforeend", (mais.items || []).map(cardVideo).join(""));
+                ligarCliquesDosCards(document.getElementById("guest-grid"));
+                botaoCarregarMais(maisPopulares);
+            };
+            botaoCarregarMais(maisPopulares);
+        } catch (e) { mostrarErro(e); }
+    }
+
+    // ---------- pesquisa ----------
+
+    async function pesquisar(query, tipo, semScroll) {
+        gs.view = "search";
+        gs.query = query;
+        gs.filtro = tipo || "video";
+        gs.nextPageToken = "";
+        document.getElementById("guest-chips").classList.add("hidden");
+        const inp = document.getElementById("guest-search-input");
+        if (inp && inp.value !== query) inp.value = query;
+        if (!semScroll) window.scrollTo({ top: 0 });
+        mostrarCarregando(`Pesquisando "${query}"...`);
+        await executarPesquisa(true);
+    }
+
+    async function executarPesquisa(primeira) {
+        try {
+            const data = await ytApi("search", {
+                part: "snippet",
+                q: gs.query,
+                type: gs.filtro,
+                maxResults: 24,
+                regionCode: GUEST_REGION,
+                relevanceLanguage: "pt",
+                pageToken: primeira ? "" : gs.nextPageToken
+            });
+            gs.nextPageToken = data.nextPageToken || "";
+            const itens = data.items || [];
+            let html = "";
+
+            if (gs.filtro === "video") {
+                const ids = itens.map(i => i.id?.videoId).filter(Boolean).join(",");
+                let detalhes = [];
+                if (ids) {
+                    const d = await ytApi("videos", { part: "snippet,statistics,contentDetails", id: ids });
+                    detalhes = d.items || [];
+                }
+                html = detalhes.map(cardVideo).join("");
+            } else if (gs.filtro === "channel") {
+                const ids = itens.map(i => i.id?.channelId).filter(Boolean).join(",");
+                let detalhes = [];
+                if (ids) {
+                    const d = await ytApi("channels", { part: "snippet,statistics", id: ids });
+                    detalhes = d.items || [];
+                }
+                html = detalhes.map(cardCanal).join("");
+            } else {
+                const ids = itens.map(i => i.id?.playlistId).filter(Boolean).join(",");
+                let detalhes = [];
+                if (ids) {
+                    const d = await ytApi("playlists", { part: "snippet,contentDetails", id: ids });
+                    detalhes = d.items || [];
+                }
+                html = detalhes.map(cardPlaylist).join("");
+            }
+
+            if (primeira) {
+                conteudo().innerHTML = `
+                    <div class="guest-search-head">
+                        <h2 class="guest-section-title"><i class="fas fa-search"></i> Resultados para “${esc(gs.query)}”</h2>
+                        <div class="guest-filters">
+                            <button class="guest-filter ${gs.filtro === "video" ? "active" : ""}" data-filtro="video"><i class="fas fa-video"></i> Vídeos</button>
+                            <button class="guest-filter ${gs.filtro === "channel" ? "active" : ""}" data-filtro="channel"><i class="fas fa-tv"></i> Canais</button>
+                            <button class="guest-filter ${gs.filtro === "playlist" ? "active" : ""}" data-filtro="playlist"><i class="fas fa-list"></i> Playlists</button>
+                        </div>
+                    </div>
+                    <div class="guest-grid" id="guest-grid">${html || `<p class="guest-vazio">Nenhum resultado encontrado.</p>`}</div>`;
+                conteudo().querySelectorAll("[data-filtro]").forEach(b => {
+                    b.onclick = () => pesquisar(gs.query, b.getAttribute("data-filtro"), true);
+                });
+            } else {
+                document.getElementById("guest-grid").insertAdjacentHTML("beforeend", html);
+            }
+            ligarCliquesDosCards(conteudo());
+            botaoCarregarMais(() => executarPesquisa(false));
+        } catch (e) { mostrarErro(e); }
+    }
+
+    // ---------- canal ----------
+
+    async function abrirCanal(channelId) {
+        pararReproducao();
+        gs.view = "channel";
+        window.scrollTo({ top: 0 });
+        document.getElementById("guest-chips").classList.add("hidden");
+        mostrarCarregando("Abrindo canal...");
+        try {
+            const d = await ytApi("channels", { part: "snippet,statistics,contentDetails,brandingSettings", id: channelId });
+            const c = (d.items || [])[0];
+            if (!c) throw new Error("Canal não encontrado.");
+            gs.contexto = { tipo: "canal", canal: c };
+            const banner = c.brandingSettings?.image?.bannerExternalUrl;
+            const st = c.statistics || {};
+            conteudo().innerHTML = `
+                <section class="guest-channel">
+                    ${banner ? `<div class="guest-chan-banner"><img src="${esc(banner)}=w1707" alt="Banner do canal"></div>` : ""}
+                    <div class="guest-chan-head">
+                        <img class="guest-chan-pic" src="${esc(thumbDe(c.snippet))}" alt="${esc(decodificarHtml(c.snippet.title))}">
+                        <div class="guest-chan-txt">
+                            <h2>${esc(decodificarHtml(c.snippet.title))}</h2>
+                            <span class="guest-card-meta">
+                                ${st.subscriberCount ? numeroCompacto(st.subscriberCount) + " inscritos · " : ""}
+                                ${st.videoCount ? numeroCompacto(st.videoCount) + " vídeos" : ""}
+                            </span>
+                            <p class="guest-chan-desc">${esc(decodificarHtml(c.snippet.description || "").slice(0, 300))}</p>
+                        </div>
+                        <button class="guest-locked guest-chan-sub" data-guest-locked="vincular este canal ao seu acervo">
+                            <i class="fas fa-link"></i> Vincular ao meu acervo
+                        </button>
+                    </div>
+                    <nav class="guest-chan-tabs">
+                        <button class="guest-chan-tab active" data-chantab="videos">Vídeos</button>
+                        <button class="guest-chan-tab" data-chantab="playlists">Playlists</button>
+                        <button class="guest-chan-tab" data-chantab="sobre">Sobre</button>
+                    </nav>
+                    <div id="guest-chan-body"></div>
+                </section>`;
+            ligarCliquesDosCards(conteudo());
+            conteudo().querySelectorAll("[data-chantab]").forEach(b => {
+                b.onclick = () => {
+                    conteudo().querySelectorAll("[data-chantab]").forEach(x => x.classList.remove("active"));
+                    b.classList.add("active");
+                    const aba = b.getAttribute("data-chantab");
+                    if (aba === "videos") abaVideosDoCanal(c);
+                    else if (aba === "playlists") abaPlaylistsDoCanal(c);
+                    else abaSobreDoCanal(c);
+                };
+            });
+            abaVideosDoCanal(c);
+        } catch (e) { mostrarErro(e); }
+    }
+    window.abrirCanalGuest = abrirCanal;
+
+    async function abaVideosDoCanal(c) {
+        const alvo = document.getElementById("guest-chan-body");
+        alvo.innerHTML = `<div class="guest-loading"><i class="fas fa-circle-notch fa-spin"></i> Carregando vídeos...</div>`;
+        const uploads = c.contentDetails?.relatedPlaylists?.uploads || idDoUploads(c.id);
+        gs.nextPageToken = "";
+        const carregar = async (primeira) => {
+            const d = await ytApi("playlistItems", {
+                part: "snippet,contentDetails", playlistId: uploads, maxResults: 24,
+                pageToken: primeira ? "" : gs.nextPageToken
+            });
+            gs.nextPageToken = d.nextPageToken || "";
+            const ids = (d.items || []).map(i => i.contentDetails?.videoId).filter(Boolean).join(",");
+            const det = ids ? (await ytApi("videos", { part: "snippet,statistics,contentDetails", id: ids })).items || [] : [];
+            const html = det.map(cardVideo).join("");
+            if (primeira) alvo.innerHTML = `<div class="guest-grid" id="guest-grid">${html || `<p class="guest-vazio">Este canal não tem vídeos públicos.</p>`}</div>`;
+            else document.getElementById("guest-grid").insertAdjacentHTML("beforeend", html);
+            ligarCliquesDosCards(alvo);
+            botaoCarregarMais(() => carregar(false));
+        };
+        try { await carregar(true); } catch (e) { alvo.innerHTML = ""; mostrarErroNoBloco(alvo, e); }
+    }
+
+    async function abaPlaylistsDoCanal(c) {
+        const alvo = document.getElementById("guest-chan-body");
+        alvo.innerHTML = `<div class="guest-loading"><i class="fas fa-circle-notch fa-spin"></i> Carregando playlists...</div>`;
+        gs.nextPageToken = "";
+        const carregar = async (primeira) => {
+            const d = await ytApi("playlists", {
+                part: "snippet,contentDetails", channelId: c.id, maxResults: 24,
+                pageToken: primeira ? "" : gs.nextPageToken
+            });
+            gs.nextPageToken = d.nextPageToken || "";
+            const html = (d.items || []).map(cardPlaylist).join("");
+            if (primeira) alvo.innerHTML = `<div class="guest-grid" id="guest-grid">${html || `<p class="guest-vazio">Este canal não tem playlists públicas.</p>`}</div>`;
+            else document.getElementById("guest-grid").insertAdjacentHTML("beforeend", html);
+            ligarCliquesDosCards(alvo);
+            botaoCarregarMais(() => carregar(false));
+        };
+        try { await carregar(true); } catch (e) { alvo.innerHTML = ""; mostrarErroNoBloco(alvo, e); }
+    }
+
+    function abaSobreDoCanal(c) {
+        const alvo = document.getElementById("guest-chan-body");
+        areaMais().innerHTML = "";
+        const st = c.statistics || {};
+        alvo.innerHTML = `
+            <div class="guest-about">
+                <h3>Descrição</h3>
+                <p class="guest-about-desc">${esc(decodificarHtml(c.snippet.description || "Sem descrição."))}</p>
+                <h3>Estatísticas</h3>
+                <ul class="guest-about-list">
+                    <li><i class="fas fa-users"></i> ${st.subscriberCount ? numeroCompacto(st.subscriberCount) + " inscritos" : "Inscritos ocultos"}</li>
+                    <li><i class="fas fa-video"></i> ${numeroCompacto(st.videoCount)} vídeos</li>
+                    <li><i class="fas fa-eye"></i> ${numeroCompacto(st.viewCount)} visualizações</li>
+                    <li><i class="fas fa-calendar"></i> Entrou em ${new Date(c.snippet.publishedAt).toLocaleDateString("pt-BR")}</li>
+                    <li><i class="fas fa-globe"></i> ${esc(c.snippet.country || "País não informado")}</li>
+                </ul>
+            </div>`;
+    }
+
+    function mostrarErroNoBloco(alvo, e) {
+        alvo.innerHTML = `<div class="guest-error"><i class="fas fa-triangle-exclamation"></i><p>${esc(e.message || e)}</p></div>`;
+    }
+
+    // ---------- playlist ----------
+
+    async function abrirPlaylist(playlistId) {
+        pararReproducao();
+        gs.view = "playlist";
+        window.scrollTo({ top: 0 });
+        document.getElementById("guest-chips").classList.add("hidden");
+        mostrarCarregando("Abrindo playlist...");
+        try {
+            const dp = await ytApi("playlists", { part: "snippet,contentDetails", id: playlistId });
+            const p = (dp.items || [])[0];
+            gs.nextPageToken = "";
+            const cabecalho = p ? `
+                <div class="guest-pl-head">
+                    <img src="${esc(thumbDe(p.snippet))}" alt="${esc(decodificarHtml(p.snippet.title))}">
+                    <div>
+                        <h2>${esc(decodificarHtml(p.snippet.title))}</h2>
+                        <span class="guest-card-channel" data-channel="${esc(p.snippet.channelId)}">${esc(decodificarHtml(p.snippet.channelTitle))}</span>
+                        <span class="guest-card-meta">${p.contentDetails?.itemCount || 0} vídeos</span>
+                        <button class="guest-locked guest-pl-save" data-guest-locked="salvar esta playlist no seu acervo"><i class="fas fa-plus"></i> Salvar no meu acervo</button>
+                    </div>
+                </div>` : "";
+            conteudo().innerHTML = cabecalho + `<div class="guest-grid" id="guest-grid"></div>`;
+            ligarCliquesDosCards(conteudo());
+
+            const carregar = async (primeira) => {
+                const d = await ytApi("playlistItems", {
+                    part: "snippet,contentDetails", playlistId, maxResults: 24,
+                    pageToken: primeira ? "" : gs.nextPageToken
+                });
+                gs.nextPageToken = d.nextPageToken || "";
+                const ids = (d.items || []).map(i => i.contentDetails?.videoId).filter(Boolean).join(",");
+                const det = ids ? (await ytApi("videos", { part: "snippet,statistics,contentDetails", id: ids })).items || [] : [];
+                document.getElementById("guest-grid").insertAdjacentHTML("beforeend", det.map(cardVideo).join(""));
+                ligarCliquesDosCards(document.getElementById("guest-grid"));
+                botaoCarregarMais(() => carregar(false));
+            };
+            await carregar(true);
+        } catch (e) { mostrarErro(e); }
+    }
+    window.abrirPlaylistGuest = abrirPlaylist;
+
+    // ---------- vídeo (watch) ----------
+
+    async function abrirVideo(videoId) {
+        if (!videoId) return;
+        gs.view = "watch";
+        window.scrollTo({ top: 0 });
+        document.getElementById("guest-chips").classList.add("hidden");
+        mostrarCarregando("Abrindo vídeo...");
+        try {
+            const d = await ytApi("videos", { part: "snippet,statistics,contentDetails", id: videoId });
+            const v = (d.items || [])[0];
+            if (!v) throw new Error("Vídeo indisponível.");
+            const s = v.snippet, st = v.statistics || {};
+            const origem = encodeURIComponent(location.origin);
+
+            conteudo().innerHTML = `
+            <div class="guest-watch">
+                <div class="guest-watch-main">
+                    <div class="guest-player-box">
+                        <iframe id="guest-watch-frame"
+                            src="https://www.youtube.com/embed/${esc(videoId)}?autoplay=1&rel=0&playsinline=1&origin=${origem}"
+                            title="${esc(decodificarHtml(s.title))}"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            allowfullscreen></iframe>
+                    </div>
+                    <h1 class="guest-watch-title">${esc(decodificarHtml(s.title))}</h1>
+                    <div class="guest-watch-bar">
+                        <div class="guest-watch-chan" data-channel="${esc(s.channelId)}">
+                            <img id="guest-watch-chanpic" src="https://placehold.co/40x40?text=%20" alt="">
+                            <div>
+                                <strong>${esc(decodificarHtml(s.channelTitle))}</strong>
+                                <span id="guest-watch-subs" class="guest-card-meta"></span>
+                            </div>
+                        </div>
+                        <div class="guest-watch-actions">
+                            <span class="guest-pill"><i class="fas fa-thumbs-up"></i> ${numeroCompacto(st.likeCount)}</span>
+                            <button class="guest-pill guest-locked" data-guest-locked="favoritar este vídeo"><i class="fas fa-heart"></i> Favoritar</button>
+                            <button class="guest-pill guest-locked" data-guest-locked="salvar este vídeo no seu acervo"><i class="fas fa-plus"></i> Salvar</button>
+                            <button class="guest-pill" id="guest-share"><i class="fas fa-share-nodes"></i> Compartilhar</button>
+                        </div>
+                    </div>
+                    <div class="guest-watch-desc">
+                        <span class="guest-card-meta">${numeroCompacto(st.viewCount)} visualizações · ${esc(tempoRelativo(s.publishedAt))} · ${esc(duracaoLegivel(v.contentDetails?.duration))}</span>
+                        <p>${esc(decodificarHtml(s.description || "Sem descrição.")).replace(/\n/g, "<br>")}</p>
+                    </div>
+                    <div class="guest-comments">
+                        <h3><i class="fas fa-comments"></i> Comentários</h3>
+                        <div class="guest-comment-locked guest-locked" data-guest-locked="comentar neste vídeo">
+                            <i class="fas fa-lock"></i> Entre com sua conta para comentar
+                        </div>
+                        <div id="guest-comments-list"></div>
+                    </div>
+                </div>
+                <aside class="guest-watch-side">
+                    <h3>Relacionados</h3>
+                    <div id="guest-related"></div>
+                </aside>
+            </div>`;
+            ligarCliquesDosCards(conteudo());
+            areaMais().innerHTML = "";
+
+            document.getElementById("guest-share").onclick = async () => {
+                const url = `https://www.youtube.com/watch?v=${videoId}`;
+                try {
+                    if (navigator.share) await navigator.share({ title: decodificarHtml(s.title), url });
+                    else { await navigator.clipboard.writeText(url); alert("Link copiado!"); }
+                } catch (e) { }
+            };
+
+            carregarAvatarDoCanal(s.channelId);
+            carregarComentariosGuest(videoId);
+            carregarRelacionados(s.title, videoId);
+        } catch (e) { mostrarErro(e); }
+    }
+    window.abrirVideoGuest = abrirVideo;
+
+    async function carregarAvatarDoCanal(channelId) {
+        try {
+            const d = await ytApi("channels", { part: "snippet,statistics", id: channelId });
+            const c = (d.items || [])[0];
+            if (!c) return;
+            const img = document.getElementById("guest-watch-chanpic");
+            if (img) img.src = thumbDe(c.snippet);
+            const subs = document.getElementById("guest-watch-subs");
+            if (subs && c.statistics?.subscriberCount) subs.innerText = `${numeroCompacto(c.statistics.subscriberCount)} inscritos`;
+        } catch (e) { }
+    }
+
+    async function carregarComentariosGuest(videoId) {
+        const alvo = document.getElementById("guest-comments-list");
+        if (!alvo) return;
+        alvo.innerHTML = `<div class="guest-loading"><i class="fas fa-circle-notch fa-spin"></i> Carregando comentários...</div>`;
+        try {
+            const d = await ytApi("commentThreads", { part: "snippet", videoId, maxResults: 20, order: "relevance", textFormat: "plainText" });
+            const itens = d.items || [];
+            if (!itens.length) { alvo.innerHTML = `<p class="guest-vazio">Nenhum comentário.</p>`; return; }
+            alvo.innerHTML = itens.map(i => {
+                const c = i.snippet.topLevelComment.snippet;
+                return `
+                <div class="guest-comment">
+                    <img src="${esc(c.authorProfileImageUrl)}" alt="">
+                    <div>
+                        <strong>${esc(c.authorDisplayName)} <span class="guest-card-meta">${esc(tempoRelativo(c.publishedAt))}</span></strong>
+                        <p>${esc(c.textDisplay).replace(/\n/g, "<br>")}</p>
+                        <span class="guest-card-meta"><i class="fas fa-thumbs-up"></i> ${numeroCompacto(c.likeCount)}</span>
+                    </div>
+                </div>`;
+            }).join("");
+        } catch (e) {
+            alvo.innerHTML = `<p class="guest-vazio">Os comentários estão desativados neste vídeo.</p>`;
+        }
+    }
+
+    async function carregarRelacionados(titulo, videoIdAtual) {
+        const alvo = document.getElementById("guest-related");
+        if (!alvo) return;
+        alvo.innerHTML = `<div class="guest-loading"><i class="fas fa-circle-notch fa-spin"></i></div>`;
+        try {
+            const termo = decodificarHtml(titulo).split(" ").slice(0, 6).join(" ");
+            const d = await ytApi("search", { part: "snippet", q: termo, type: "video", maxResults: 15, regionCode: GUEST_REGION });
+            const ids = (d.items || []).map(i => i.id?.videoId).filter(id => id && id !== videoIdAtual).join(",");
+            const det = ids ? (await ytApi("videos", { part: "snippet,statistics,contentDetails", id: ids })).items || [] : [];
+            alvo.innerHTML = det.map(v => `
+                <div class="guest-rel" data-video="${esc(v.id)}">
+                    <div class="guest-rel-thumb">
+                        <img loading="lazy" src="${esc(thumbDe(v.snippet))}" alt="">
+                        <span class="guest-dur">${esc(duracaoLegivel(v.contentDetails?.duration))}</span>
+                    </div>
+                    <div>
+                        <h5>${esc(decodificarHtml(v.snippet.title))}</h5>
+                        <span class="guest-card-meta">${esc(decodificarHtml(v.snippet.channelTitle))}</span>
+                        <span class="guest-card-meta">${numeroCompacto(v.statistics?.viewCount)} visualizações</span>
+                    </div>
+                </div>`).join("") || `<p class="guest-vazio">Sem sugestões.</p>`;
+            ligarCliquesDosCards(alvo);
+        } catch (e) {
+            alvo.innerHTML = `<p class="guest-vazio">Não foi possível carregar sugestões.</p>`;
+        }
+    }
+
+    // ---------- inicialização do botão na tela de login ----------
+
+    function prepararBotaoLogin() {
+        const btn = document.getElementById("btn-guest-access");
+        if (btn) btn.onclick = (e) => { e.preventDefault(); window.abrirModoGuest(); };
+    }
+
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", prepararBotaoLogin);
+    else prepararBotaoLogin();
+})();
