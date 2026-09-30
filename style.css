@@ -3346,3 +3346,61 @@ body.mini-yt-logado .guest-locked { opacity: 1 !important; cursor: pointer; }
     .guest-btn-voltar-app span { display: none; }
     .guest-btn-voltar-app { padding: 9px 12px; }
 }
+
+/* Mini YouTube: menu recolhível e área de conteúdo fluida */
+.guest-body, .guest-main { min-width: 0; }
+.guest-sidebar { transition: width .2s ease, padding .2s ease, transform .2s ease; }
+.guest-wrapper.guest-sidebar-collapsed .guest-sidebar {
+    width: 0;
+    padding-left: 0;
+    padding-right: 0;
+    border-right: 0;
+    overflow: hidden;
+}
+.guest-sidebar-backdrop { display: none; }
+.guest-theme-switcher {
+    position: absolute;
+    right: 20px;
+    bottom: 20px;
+    z-index: 1001;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px;
+    border-radius: 30px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.guest-theme-switcher .theme-btn-toggle[aria-pressed="true"] {
+    outline: 2px solid var(--text-white);
+    outline-offset: 2px;
+}
+.guest-wrapper .guest-card-channel-item .guest-card-info { min-width: 0; }
+.guest-wrapper .guest-card-save { z-index: 2; }
+body.theme-claro .guest-theme-switcher { background: var(--bg-card); border-color: var(--border-color); }
+body.guest-mode-on .theme-switcher-float { display: none !important; }
+@media (max-width: 820px) {
+    .guest-wrapper .guest-sidebar {
+        width: min(260px, 85vw);
+        padding: 14px 10px;
+        border-right: 1px solid var(--border-color);
+        transform: translateX(-105%);
+    }
+    .guest-wrapper.guest-sidebar-open .guest-sidebar { transform: translateX(0); }
+    .guest-wrapper.guest-sidebar-open .guest-sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 1099;
+        background: rgba(0,0,0,.55);
+    }
+    .guest-theme-switcher { right: 10px; bottom: 10px; gap: 4px; padding: 6px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .guest-sidebar { transition: none; }
+}
+@media (max-width: 820px) {
+    .guest-wrapper.guest-sidebar-open .guest-header { position: relative; z-index: 1101; }
+    .guest-wrapper.guest-sidebar-open .guest-sidebar { top: 55px; }
+}

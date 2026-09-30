@@ -5041,7 +5041,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         wrap.innerHTML = `
             <header class="guest-header">
                 <div class="guest-header-left">
-                    <button class="guest-icon-btn guest-menu-btn" id="guest-btn-menu" title="Menu"><i class="fas fa-bars"></i></button>
+                    <button class="guest-icon-btn guest-menu-btn" id="guest-btn-menu" title="Menu" aria-label="Abrir ou recolher menu" aria-controls="guest-sidebar" aria-expanded="true"><i class="fas fa-bars"></i></button>
                     <div class="guest-nav-arrows">
                         <button class="guest-icon-btn guest-nav-arrow" id="guest-btn-back" title="Voltar" aria-label="Voltar" disabled><i class="fas fa-arrow-left"></i></button>
                         <button class="guest-icon-btn guest-nav-arrow" id="guest-btn-fwd" title="Avançar" aria-label="Avançar" disabled><i class="fas fa-arrow-right"></i></button>
@@ -5071,6 +5071,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
             </div>
 
             <div class="guest-body">
+                <div class="guest-sidebar-backdrop" id="guest-sidebar-backdrop" aria-hidden="true"></div>
                 <aside class="guest-sidebar" id="guest-sidebar">
                     <button class="guest-side-item active" data-guest-nav="home"><i class="fas fa-house"></i> Início</button>
                     <button class="guest-side-item" data-guest-nav="trending"><i class="fas fa-fire"></i> Em alta</button>
@@ -5097,6 +5098,13 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
                 </main>
             </div>
 
+            <div class="guest-theme-switcher" role="group" aria-label="Selecionar tema">
+                <button type="button" class="theme-btn-toggle btn-t-yt" data-guest-theme="youtube" title="Tema YouTube" aria-label="Tema YouTube"><i class="fab fa-youtube"></i></button>
+                <button type="button" class="theme-btn-toggle btn-t-nf" data-guest-theme="netflix" title="Tema Netflix" aria-label="Tema Netflix"><i class="fas fa-play"></i></button>
+                <button type="button" class="theme-btn-toggle btn-t-ft" data-guest-theme="futurista" title="Tema Cyberpunk Futurista" aria-label="Tema Cyberpunk Futurista"><i class="fas fa-bolt"></i></button>
+                <button type="button" class="theme-btn-toggle btn-t-cl" data-guest-theme="claro" title="Tema Claro Moderno" aria-label="Tema Claro Moderno"><i class="fas fa-sun"></i></button>
+            </div>
+
             <div id="guest-login-required" class="guest-lr-overlay hidden">
                 <div class="guest-lr-box">
                     <i class="fas fa-lock guest-lr-ico"></i>
@@ -5119,7 +5127,19 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         const $ = (id) => document.getElementById(id);
 
         $("guest-brand").onclick = () => irPara("home");
-        $("guest-btn-menu").onclick = () => $("guest-sidebar").classList.toggle("open");
+        $("guest-btn-menu").onclick = () => definirSidebarGuest(!sidebarGuestAberta());
+        $("guest-sidebar-backdrop").onclick = () => definirSidebarGuest(false);
+        $("guest-container").addEventListener("pointerdown", (ev) => {
+            if (window.innerWidth > 820 || !sidebarGuestAberta()) return;
+            if (ev.target.closest("#guest-sidebar, #guest-btn-menu")) return;
+            definirSidebarGuest(false);
+        });
+        window.addEventListener("resize", () => {
+            definirSidebarGuest(window.innerWidth > 820 && !$("guest-container").classList.contains("guest-sidebar-collapsed"));
+        });
+        $("guest-container").querySelectorAll("[data-guest-theme]").forEach(btn => {
+            btn.onclick = () => selecionarTemaGuest(btn.getAttribute("data-guest-theme"));
+        });
         $("guest-btn-back").onclick = voltarNav;
         $("guest-btn-fwd").onclick = avancarNav;
         $("guest-btn-voltar-app").onclick = () => fecharMiniYoutube();
@@ -5132,7 +5152,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         const disparar = (inputId) => {
             const v = ($(inputId)?.value || "").trim();
             if (!v) return;
-            $("guest-sidebar").classList.remove("open");
+            if (window.innerWidth <= 820) definirSidebarGuest(false);
             $("guest-mobile-search").classList.add("hidden");
             pesquisar(v, gs.filtro || "video");
         };
@@ -5146,7 +5166,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
             btn.onclick = () => {
                 document.querySelectorAll("[data-guest-nav]").forEach(b => b.classList.remove("active"));
                 btn.classList.add("active");
-                $("guest-sidebar").classList.remove("open");
+                if (window.innerWidth <= 820) definirSidebarGuest(false);
                 irPara(btn.getAttribute("data-guest-nav"));
             };
         });
@@ -5159,6 +5179,34 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
             if (ev.altKey && ev.key === "ArrowLeft") { ev.preventDefault(); voltarNav(); }
             if (ev.altKey && ev.key === "ArrowRight") { ev.preventDefault(); avancarNav(); }
         });
+    }
+
+    function sidebarGuestAberta() {
+        const wrap = document.getElementById("guest-container");
+        return window.innerWidth <= 820
+            ? wrap.classList.contains("guest-sidebar-open")
+            : !wrap.classList.contains("guest-sidebar-collapsed");
+    }
+
+    function definirSidebarGuest(aberta) {
+        const wrap = document.getElementById("guest-container");
+        if (!wrap) return;
+        wrap.classList.toggle("guest-sidebar-open", window.innerWidth <= 820 && aberta);
+        if (window.innerWidth > 820) wrap.classList.toggle("guest-sidebar-collapsed", !aberta);
+        document.getElementById("guest-btn-menu")?.setAttribute("aria-expanded", String(aberta));
+    }
+
+    const TEMAS_GUEST = ["theme-netflix", "theme-futurista", "theme-claro"];
+    function selecionarTemaGuest(tema) {
+        const classe = tema === "youtube" ? "" : `theme-${tema}`;
+        if (classe && !TEMAS_GUEST.includes(classe)) return;
+        document.body.classList.remove(...TEMAS_GUEST);
+        if (classe) document.body.classList.add(classe);
+        document.querySelectorAll("[data-guest-theme]").forEach(btn => {
+            btn.setAttribute("aria-pressed", String(btn.getAttribute("data-guest-theme") === tema));
+        });
+        try { localStorage.setItem("sh_mini_yt_tema", classe); } catch (e) { }
+        if (gs.logado && typeof salvarPreferenciaNoFirebase === "function") salvarPreferenciaNoFirebase({ tema: classe });
     }
 
     // ==========================================================
@@ -5205,11 +5253,15 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         if (acao === "acervo") { abrirNoApp(() => { }); return; }
         if (acao === "favoritos") { abrirNoApp(() => clicarSeExistir("btn-favorites")); return; }
         if (acao === "adicionar") { abrirNoApp(() => abrirAdminNaAba("add-tab", "tab-trigger-add")); return; }
-        if (acao === "vincular-canal" || acao === "vincular-este-canal") {
+        if (acao === "vincular-canal" || acao === "vincular-este-canal" || acao === "salvar-canal") {
             abrirNoApp(() => {
-                abrirAdminNaAba("channels-tab", "tab-trigger-channels");
-                const campo = document.getElementById("channel-search-input") || document.getElementById("manual-media-url");
-                if (campo && info.titulo) { campo.value = info.titulo; campo.focus(); }
+                abrirAdminNaAba("channel-tab", "tab-trigger-channel");
+                const campo = document.getElementById("search-channel-input");
+                if (campo && info.titulo) {
+                    campo.value = info.titulo;
+                    campo.focus();
+                    document.getElementById("btn-search-channel")?.click();
+                }
             });
             return;
         }
@@ -5331,7 +5383,14 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
     window.abrirModoGuest = function (opcoes) {
         const op = opcoes || {};
         montarInterface();
-        aplicarModoLogado(op.logado === true || (op.logado !== false && estaLogado()));
+        aplicarModoLogado(estaLogado());
+        if (!gs.logado) {
+            try { selecionarTemaGuest((localStorage.getItem("sh_mini_yt_tema") || "").replace(/^theme-/, "") || "youtube"); } catch (e) { }
+        } else {
+            const temaAtual = TEMAS_GUEST.find(t => document.body.classList.contains(t));
+            document.querySelectorAll("[data-guest-theme]").forEach(btn => btn.setAttribute("aria-pressed", String(btn.getAttribute("data-guest-theme") === (temaAtual ? temaAtual.replace(/^theme-/, "") : "youtube"))));
+        }
+        definirSidebarGuest(window.innerWidth > 820 && !document.getElementById("guest-container").classList.contains("guest-sidebar-collapsed"));
         document.getElementById("login-screen")?.classList.add("hidden");
         document.getElementById("app-container")?.classList.add("hidden");
         document.getElementById("guest-container")?.classList.remove("hidden");
@@ -5515,6 +5574,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
                 <span class="guest-card-meta">${esc(inscritos)}</span>
                 <span class="guest-card-desc">${esc(decodificarHtml(s.description || "").slice(0, 110))}</span>
             </div>
+            <button class="guest-card-save guest-locked" data-guest-acao="salvar-canal" data-yt-channel="${esc(id)}" data-yt-title="${esc(decodificarHtml(s.title))}" data-guest-locked="vincular este canal ao seu acervo" title="Vincular canal ao acervo" aria-label="Vincular canal ao acervo"><i class="fas fa-plus"></i></button>
         </article>`;
     }
 
@@ -5532,6 +5592,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
                 <h4>${esc(decodificarHtml(s.title))}</h4>
                 <span class="guest-card-channel" data-channel="${esc(s.channelId || "")}">${esc(decodificarHtml(s.channelTitle))}</span>
             </div>
+            <button class="guest-card-save guest-locked" data-guest-acao="salvar-playlist" data-yt-playlist="${esc(id)}" data-yt-title="${esc(decodificarHtml(s.title))}" data-yt-thumb="${esc(thumbDe(s))}" data-guest-locked="salvar esta playlist no seu acervo" title="Salvar playlist no acervo" aria-label="Salvar playlist no acervo"><i class="fas fa-plus"></i></button>
         </article>`;
     }
 
@@ -5553,12 +5614,12 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         });
         (escopo || document).querySelectorAll("[data-playlist]").forEach(el => {
             el.onclick = (ev) => {
-                if (ev.target.closest("[data-channel]")) return;
+                if (ev.target.closest("[data-guest-locked], [data-channel]")) return;
                 abrirPlaylist(el.getAttribute("data-playlist"));
             };
         });
         (escopo || document).querySelectorAll("[data-guest-locked]").forEach(btn => {
-            btn.onclick = (ev) => { ev.stopPropagation(); window.exigirLoginGuest(btn.getAttribute("data-guest-locked")); };
+            btn.onclick = (ev) => { ev.stopPropagation(); tratarBotaoRestrito(btn); };
         });
     }
 
