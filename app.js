@@ -839,7 +839,7 @@ async function buscarVideosRecentesDoCanal(playlistId) {
             const itensInvertidos = data.items.reverse();
             currentPlaylist = itensInvertidos.map(item => ({
                 título: item.snippet.title, link: `https://www.youtube.com/embed/${item.snippet.resourceId.videoId}`,
-                capa: item.snippet.thumbnails.medium ? item.snippet.thumbnails.medium.url : item.snippet.thumbnails.default.url,
+                capa: item.snippet.thumbnails.high ? item.snippet.thumbnails.high.url : item.snippet.thumbnails.default.url,
                 categoria: selectedCategory, subcategoria: "Vídeos Recentes", isDinâmico: true
             }));
             if (grid) { 
@@ -941,7 +941,7 @@ async function searchYouTubeGlobal(query) {
         if(data.items) {
             data.items.forEach(item => {
                 const isPl = item.id.kind === 'youtube#playlist';
-                lastYtSearchResults.push({ type: isPl ? 'playlist' : 'video', youtubeId: isPl ? item.id.playlistId : item.id.videoId, title: item.snippet.title, thumb: item.snippet.thumbnails.medium ? item.snippet.thumbnails.medium.url : 'https://placehold.co/300x200?text=Sem+Capa' });
+                lastYtSearchResults.push({ type: isPl ? 'playlist' : 'video', youtubeId: isPl ? item.id.playlistId : item.id.videoId, title: item.snippet.title, thumb: item.snippet.thumbnails.high ? item.snippet.thumbnails.high.url : 'https://placehold.co/300x200?text=Sem+Capa' });
             });
         }
         renderMosaic();
@@ -1246,7 +1246,7 @@ async function saveMediaToDatabase(e) {
             
             for(let item of data.items) {
                 let vId = item.snippet.resourceId.videoId; let título = item.snippet.title;
-                let capa = item.snippet.thumbnails.medium ? item.snippet.thumbnails.medium.url : item.snippet.thumbnails.default.url; let linkVideo = `https://www.youtube.com/embed/${vId}`;
+                let capa = item.snippet.thumbnails.high ? item.snippet.thumbnails.high.url : item.snippet.thumbnails.default.url; let linkVideo = `https://www.youtube.com/embed/${vId}`;
                 database.push({ título, link: linkVideo, capa, categoria, subcategoria });
             }
             await empurrarBancoIntegralParaServidor();
@@ -1604,7 +1604,7 @@ function setupEventListeners() {
             try {
                 if (vId) {
                     const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${vId}&key=${CONFIG.YT_API_KEY}`); const data = await res.json();
-                    if (data.items && data.items.length > 0) { const snip = data.items[0].snippet; document.getElementById('prev-title').value = snip.title; document.getElementById('prev-thumb').src = snip.thumbnails.medium ? snip.thumbnails.medium.url : snip.thumbnails.default.url; } 
+                    if (data.items && data.items.length > 0) { const snip = data.items[0].snippet; document.getElementById('prev-title').value = snip.title; document.getElementById('prev-thumb').src = snip.thumbnails.high ? snip.thumbnails.high.url : snip.thumbnails.default.url; } 
                 }
             } catch(err) {} finally { btn.innerText = "Capturar Dados"; }
         }
