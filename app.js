@@ -84,6 +84,27 @@ let ordemAtualNomes = 'az'; // padrao de CATEGORIAS/SUBCATEGORIAS: ordem alfabet
 let duracoesCache = {};
 let buscandoDuracoes = false;
 
+
+// ==========================================
+// THUMBNAILS DO YOUTUBE EM ALTA DEFINIÇÃO
+// Sempre prefere maxres > standard > high > medium > default
+// ==========================================
+function melhorThumbYoutube(snippet) {
+    const t = (snippet && snippet.thumbnails) || {};
+    return (t.maxres || t.standard || t.high || t.medium || t.default || {}).url || '';
+}
+
+// URL direta pela ID do vídeo: tenta maxresdefault e cai para hqdefault se não existir
+function thumbAltaPorId(videoId) {
+    return videoId ? `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg` : '';
+}
+
+// Encadeia fallback de resolução na tag <img>: maxres -> sd -> hq -> mq
+function atributoFallbackThumb(videoId) {
+    if (!videoId) return '';
+    return ` onerror="this.onerror=null; var b='https://img.youtube.com/vi/${videoId}/'; if(this.src.indexOf('maxresdefault')>-1)this.src=b+'sddefault.jpg'; else if(this.src.indexOf('sddefault')>-1)this.src=b+'hqdefault.jpg'; else if(this.src.indexOf('hqdefault')>-1)this.src=b+'mqdefault.jpg';"`;
+}
+
 function comparadorTexto(a, b) {
     return String(a || '').localeCompare(String(b || ''), 'pt-BR', { sensitivity: 'base', numeric: true });
 }
@@ -755,7 +776,9 @@ function createCard(title, imgSrc, showAddButton = false, isPlaylist = false, cl
         const txt = formatarDuracao(seg);
         if (txt) selo = `<span class="duration-badge"><i class="fas fa-clock"></i> ${txt}</span>`;
     }
-    let htmlContent = `<div class="card-thumb"><img src="${imgSrc || 'https://placehold.co/160x90?text=Sem+Capa'}">${selo}</div><h4 title="${String(title || '').replace(/"/g, '&quot;')}">${title}</h4>`;
+    const vidCard = extractYoutubeId((shareInfo && shareInfo.link) || '') || extractYoutubeId(imgSrc || '');
+    const srcCard = (!imgSrc && vidCard) ? thumbAltaPorId(vidCard) : (imgSrc || 'https://placehold.co/160x90?text=Sem+Capa');
+    let htmlContent = `<div class="card-thumb"><img src="${srcCard}"${atributoFallbackThumb(vidCard)}>${selo}</div><h4 title="${String(title || '').replace(/"/g, '&quot;')}">${title}</h4>`;
     if (favInfo) {
         const ativo = ehFavorito(favInfo) ? ' ativo' : '';
         htmlContent += `<div class="fav-badge${ativo}" title="Favoritar"><i class="fa-heart ${ativo ? 'fas' : 'far'}"></i></div>`;
@@ -839,7 +862,7 @@ async function buscarVideosRecentesDoCanal(playlistId) {
             const itensInvertidos = data.items.reverse();
             currentPlaylist = itensInvertidos.map(item => ({
                 título: item.snippet.title, link: `https://www.youtube.com/embed/${item.snippet.resourceId.videoId}`,
-                capa: item.snippet.thumbnails.high ? item.snippet.thumbnails.high.url : item.snippet.thumbnails.default.url,
+                capa: melhorThumbYoutube(item.snippet) || 'https://placehold.co/300x200?text=Sem+Capa',
                 categoria: selectedCategory, subcategoria: "Vídeos Recentes", isDinâmico: true
             }));
             if (grid) { 
@@ -874,12 +897,12 @@ function configurarEventosBuscaCanal() {
             data.items.forEach(item => {
                 const div = document.createElement('div');
                 div.className = 'channel-search-item';
-                div.innerHTML = `<img src="${item.snippet.thumbnails.default.url}"><div class="info"><h4>${item.snippet.title}</h4></div>`;
+                div.innerHTML = `<img src="${melhorThumbYoutube(item.snippet)}"><div class="info"><h4>${item.snippet.title}</h4></div>`;
                 div.onclick = () => {
                     canalSelecionadoProvisorio = { 
                         channelId: item.snippet.channelId, 
                         title: item.snippet.title, 
-                        thumb: item.snippet.thumbnails.default.url, 
+                        thumb: melhorThumbYoutube(item.snippet), 
                         description: item.snippet.description 
                     };
                     document.getElementById("chan-thumb").src = canalSelecionadoProvisorio.thumb;
@@ -941,7 +964,7 @@ async function searchYouTubeGlobal(query) {
         if(data.items) {
             data.items.forEach(item => {
                 const isPl = item.id.kind === 'youtube#playlist';
-                lastYtSearchResults.push({ type: isPl ? 'playlist' : 'video', youtubeId: isPl ? item.id.playlistId : item.id.videoId, title: item.snippet.title, thumb: item.snippet.thumbnails.high ? item.snippet.thumbnails.high.url : 'https://placehold.co/300x200?text=Sem+Capa' });
+                lastYtSearchResults.push({ type: isPl ? 'playlist' : 'video', youtubeId: isPl ? item.id.playlistId : item.id.videoId, title: item.snippet.title, thumb: melhorThumbYoutube(item.snippet) || 'https://placehold.co/300x200?text=Sem+Capa' });
             });
         }
         renderMosaic();
@@ -1246,7 +1269,7 @@ async function saveMediaToDatabase(e) {
             
             for(let item of data.items) {
                 let vId = item.snippet.resourceId.videoId; let título = item.snippet.title;
-                let capa = item.snippet.thumbnails.high ? item.snippet.thumbnails.high.url : item.snippet.thumbnails.default.url; let linkVideo = `https://www.youtube.com/embed/${vId}`;
+                let capa = melhorThumbYoutube(item.snippet); let linkVideo = `https://www.youtube.com/embed/${vId}`;
                 database.push({ título, link: linkVideo, capa, categoria, subcategoria });
             }
             await empurrarBancoIntegralParaServidor();
@@ -1604,7 +1627,7 @@ function setupEventListeners() {
             try {
                 if (vId) {
                     const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${vId}&key=${CONFIG.YT_API_KEY}`); const data = await res.json();
-                    if (data.items && data.items.length > 0) { const snip = data.items[0].snippet; document.getElementById('prev-title').value = snip.title; document.getElementById('prev-thumb').src = snip.thumbnails.high ? snip.thumbnails.high.url : snip.thumbnails.default.url; } 
+                    if (data.items && data.items.length > 0) { const snip = data.items[0].snippet; document.getElementById('prev-title').value = snip.title; document.getElementById('prev-thumb').src = melhorThumbYoutube(snip); } 
                 }
             } catch(err) {} finally { btn.innerText = "Capturar Dados"; }
         }
@@ -5286,7 +5309,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
                 const track = {
                     "título": info.titulo || "Vídeo do YouTube",
                     link: `https://www.youtube.com/embed/${info.videoId}`,
-                    capa: info.capa || `https://img.youtube.com/vi/${info.videoId}/hqdefault.jpg`,
+                    capa: info.capa || thumbAltaPorId(info.videoId),
                     categoria: "Mini YouTube",
                     subcategoria: "Favoritos"
                 };
