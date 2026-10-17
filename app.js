@@ -13,6 +13,45 @@ const firebaseConfig = {
 
 // CHAVE DE API GLOBAL DO YOUTUBE (PROTEGIDA POR RESTRIÇÃO DE DOMÍNIO HTTP)
 const YT_API_KEY_GLOBAL = "AIzaSyDHkLh2vGgxUJpVo11o1kKqtH1DQ5Toeu4";
+// CHAVE DE API RESERVA DO YOUTUBE (usada automaticamente se a primeira falhar)
+const YT_API_KEY_RESERVA = "COLE_AQUI_SUA_SEGUNDA_CHAVE_YOUTUBE_V3";
+
+// ==========================================
+// FALLBACK AUTOMÁTICO ENTRE CHAVES DO YOUTUBE
+// Intercepta qualquer chamada à YouTube Data API v3. Se a chave atual
+// falhar (cota excedida, chave inválida, bloqueio etc.), repete a mesma
+// requisição com a chave reserva e passa a usá-la nas próximas chamadas.
+// ==========================================
+(function instalarFallbackYoutube() {
+    const chaves = [YT_API_KEY_GLOBAL, YT_API_KEY_RESERVA].filter(k => k && !/^COLE_AQUI/.test(k));
+    let indiceAtivo = 0;
+    const fetchOriginal = window.fetch.bind(window);
+    const ehYoutubeApi = (u) => typeof u === "string" && u.indexOf("googleapis.com/youtube/v3") > -1;
+    const trocarChave = (u, chave) => {
+        try { const url = new URL(u); if (url.searchParams.has("key")) url.searchParams.set("key", chave); return url.toString(); }
+        catch (e) { return u; }
+    };
+    window.fetch = async function (recurso, opcoes) {
+        const urlStr = typeof recurso === "string" ? recurso : (recurso && recurso.url);
+        if (!ehYoutubeApi(urlStr) || chaves.length < 2 || urlStr.indexOf("key=") === -1) return fetchOriginal(recurso, opcoes);
+        let ultimaResposta = null, ultimoErro = null;
+        for (let t = 0; t < chaves.length; t++) {
+            const idx = (indiceAtivo + t) % chaves.length;
+            const url = trocarChave(urlStr, chaves[idx]);
+            try {
+                const resp = await fetchOriginal(typeof recurso === "string" ? url : new Request(url, recurso), opcoes);
+                // 400/403/429 = chave inválida, cota esgotada ou restrição -> tenta a próxima
+                if (resp.ok || [400, 403, 429].indexOf(resp.status) === -1) {
+                    if (idx !== indiceAtivo) { indiceAtivo = idx; try { CONFIG.YT_API_KEY = chaves[idx]; } catch (e) {} }
+                    return resp;
+                }
+                ultimaResposta = resp;
+            } catch (e) { ultimoErro = e; }
+        }
+        if (ultimaResposta) return ultimaResposta;
+        throw ultimoErro || new Error("Falha na YouTube API");
+    };
+})();
 
 if (!firebase.apps.length) {
     firebase.initializeApp(firebaseConfig);
@@ -6085,4 +6124,101 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
 
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", prepararBotaoLogin);
     else prepararBotaoLogin();
+})();
+
+
+// ==========================================
+// BOTÃO VOLTAR NATIVO (Android / iPhone) E VOLTAR DO NAVEGADOR (desktop)
+// Cada toque em "voltar" desfaz a última ação dentro do app
+// (fecha janelas, menus, player, retrocede telas) sem fechar o app.
+// Também funciona com Alt+←, botão "voltar" do mouse e do navegador.
+// ==========================================
+(function instalarVoltarNativo() {
+    const pilhaTelas = [];
+    let restaurandoTela = false;
+
+    const estadoAtual = () => ({ v: currentView, c: selectedCategory, s: selectedSubcategory });
+    const iguais = (a, b) => a && b && a.v === b.v && a.c === b.c && a.s === b.s;
+
+    // Registra o histórico de telas sempre que o mosaico é redesenhado
+    if (typeof renderMosaic === "function") {
+        const renderOriginal = renderMosaic;
+        let ultimo = estadoAtual();
+        renderMosaic = function () {
+            const novo = estadoAtual();
+            if (!restaurandoTela && !iguais(novo, ultimo)) {
+                pilhaTelas.push(ultimo);
+                if (pilhaTelas.length > 100) pilhaTelas.shift();
+            }
+            ultimo = novo;
+            return renderOriginal.apply(this, arguments);
+        };
+        window.renderMosaic = renderMosaic;
+    }
+
+    function clicar(el) { if (el) { el.click(); return true; } return false; }
+
+    function desfazerUltimaAcao() {
+        // 1) Menu de compartilhamento
+        const share = document.getElementById("share-sheet");
+        if (share) { share.remove(); return true; }
+
+        // 2) Aviso de login do modo visitante
+        const aviso = document.getElementById("guest-login-required");
+        if (aviso && !aviso.classList.contains("hidden")) { aviso.classList.add("hidden"); return true; }
+
+        // 3) Janelas (modais) abertas — fecha a que está por cima
+        const modais = Array.from(document.querySelectorAll(".modal-overlay, .profile-modal-overlay"))
+            .filter(m => !m.classList.contains("hidden") && getComputedStyle(m).display !== "none");
+        if (modais.length) {
+            const topo = modais[modais.length - 1];
+            if (!clicar(topo.querySelector(".btn-close, .profile-close-btn, [id^='btn-close'], [id^='btn-cancel']"))) topo.classList.add("hidden");
+            return true;
+        }
+
+        // 4) Menu lateral aberto no celular
+        const sidebar = document.getElementById("sidebar");
+        if (sidebar && sidebar.classList.contains("open") && window.innerWidth <= 768) {
+            const bd = document.getElementById("sidebar-backdrop");
+            if (!clicar(bd)) sidebar.classList.remove("open");
+            return true;
+        }
+
+        // 5) Mini YouTube / modo visitante
+        const guest = document.getElementById("guest-container");
+        if (guest && !guest.classList.contains("hidden")) {
+            const voltarGuest = document.getElementById("guest-btn-back");
+            if (voltarGuest && !voltarGuest.disabled) { voltarGuest.click(); return true; }
+            const voltarApp = document.getElementById("guest-btn-voltar-app");
+            if (voltarApp && getComputedStyle(voltarApp).display !== "none") { voltarApp.click(); return true; }
+            return false;
+        }
+
+        // 6) Player aberto
+        const fecharPlayer = document.getElementById("btn-close-player");
+        if (fecharPlayer && fecharPlayer.offsetParent !== null) { fecharPlayer.click(); return true; }
+
+        // 7) Telas anteriores (categorias > subcategorias > mídias > buscas)
+        while (pilhaTelas.length) {
+            const anterior = pilhaTelas.pop();
+            if (iguais(anterior, estadoAtual())) continue;
+            currentView = anterior.v; selectedCategory = anterior.c; selectedSubcategory = anterior.s;
+            restaurandoTela = true;
+            try { renderMosaic(); try { renderSidebar(); } catch (e) {} } finally { restaurandoTela = false; }
+            return true;
+        }
+        return false;
+    }
+
+    // Mantém sempre uma entrada "guarda" no histórico para que o voltar
+    // nativo nunca saia do app.
+    try {
+        history.replaceState({ streamhubBase: true }, "", location.href);
+        history.pushState({ streamhubGuard: true }, "", location.href);
+    } catch (e) {}
+
+    window.addEventListener("popstate", function () {
+        try { desfazerUltimaAcao(); } catch (e) { console.warn("Voltar:", e); }
+        try { history.pushState({ streamhubGuard: true }, "", location.href); } catch (e) {}
+    });
 })();
