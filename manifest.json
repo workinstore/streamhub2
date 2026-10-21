@@ -9,7 +9,7 @@
   "icons": [
     {
       "src": "sh.png",
-      "sizes": "128x128",
+      "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     }
