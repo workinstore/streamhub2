@@ -1,9 +1,9 @@
 {
-  "name": "Streamhub by Di Workin'",
-  "short_name": "Teste Streamhub",
-  "start_url": "/",
+  "name": "StreamHub by Di Workin'",
+  "short_name": "StreamHub",
+  "start_url": "https://streamhub.workinstore.org/",
   "scope": "/",
-  "display": "standalone",
+  "display": "fullscreen",
   "background_color": "#0b0e14",
   "theme_color": "#0b0e14",
   "icons": [
@@ -13,5 +13,10 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "id": "StreamHub",
+  "description": "StreamHub é um app que permite você catalogar várias mídias de vários sites e reproduzi-las onde quiser",
+  "dir": "auto",
+  "lang": "pt",
+  "orientation": "any"
 }
