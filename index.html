@@ -200,6 +200,12 @@
                     </select>
                 </div>
 
+                <div id="scope-search-bar" class="scope-search-bar hidden" role="search">
+                    <i class="fas fa-magnifying-glass"></i>
+                    <input type="search" id="scope-search-input" autocomplete="off" placeholder="Buscar nesta categoria...">
+                    <button type="button" id="scope-search-clear" class="scope-search-clear hidden" title="Limpar busca" aria-label="Limpar busca"><i class="fas fa-xmark"></i></button>
+                </div>
+
                 <div id="mosaic-grid" class="mosaic-grid">
                 </div>
             </main>
@@ -226,6 +232,7 @@
                     <button id="btn-pip" class="btn-player-action" type="button" title="Picture-in-Picture (janela flutuante)" aria-label="Picture-in-Picture (janela flutuante)" aria-pressed="false"><i class="fas fa-clone"></i></button>
                     <button id="btn-bg-play" class="btn-player-action" type="button" title="Reproduzir com a tela desligada" aria-label="Reproduzir com a tela desligada" aria-pressed="false"><i class="fas fa-mobile-screen-button"></i></button>
                     <button id="btn-cast" class="btn-player-action btn-cast" title="Espelhar / Transmitir para a TV"><i class="fab fa-chromecast"></i></button>
+                    <button id="btn-player-size" class="btn-player-action" type="button" title="Tamanho do player: Automático" aria-label="Tamanho do player" data-label="Automático"><i class="fas fa-expand"></i><span class="player-size-tag">A</span></button>
                     <button id="btn-toggle-comments" class="btn-player-action" title="Mostrar/Ocultar Comentários"><i class="fas fa-comments"></i></button>
                     <button id="btn-close-player" class="btn-icon-close" title="Fechar Player"><i class="fas fa-times-circle"></i></button>
                 </div>
@@ -241,6 +248,12 @@
                         <span id="audio-warning" class="audio-warning hidden"></span>
                     </div>
                 </div>
+                <div id="stream-badge" class="stream-badge hidden" aria-live="polite">
+                    <span class="stream-dot"></span>
+                    <span id="stream-badge-text">AO VIVO</span>
+                    <span id="stream-badge-format" class="stream-format"></span>
+                </div>
+                <div id="stream-status" class="stream-status hidden"><i class="fas fa-circle-notch fa-spin"></i> <span>Conectando à transmissão...</span></div>
                 <video id="raw-player" class="hidden" controls autoplay playsinline webkit-playsinline preload="metadata"></video>
             </div>
 
@@ -666,6 +679,9 @@
     
     <script src="https://www.youtube.com/iframe_api"></script>
     <!-- app.js precisa registrar o callback __onGCastApiAvailable ANTES do SDK do Cast carregar -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
     <script src="app.js"></script>
     <script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
 </body>
