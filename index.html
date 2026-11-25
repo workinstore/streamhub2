@@ -20,6 +20,7 @@
 
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js"></script>
 </head>
 <body>
@@ -28,8 +29,9 @@
         <div class="login-box">
             
             <div style="text-align: center; margin-bottom: 20px;">
-                <img src="logo.png" alt="Logo StreamHub" style="max-width: 100px; height: auto; margin-bottom: 10px;">
-                <h2 id="login-title" style="margin: 0;">StreamHub</h2>
+                <img src="logo.png" data-logo-quadrada alt="Logo StreamHub" style="max-width: 100px; height: auto; margin-bottom: 10px;"><br/>
+				<img src="logo2.png" master-logo-wide alt="Logo StreamHub" style="max-width: 150px; height: auto; margin-bottom: 15px;">
+                <h2 id="login-title" style="margin: 0;"></h2>
             </div>
             
             <form id="form-login-fluxo">
@@ -146,6 +148,7 @@
             <div class="header-right">
                 <button id="btn-toggle-search-mobile" class="btn-icon btn-mobile-only" title="Pesquisar"><i class="fas fa-search"></i></button>
                 
+                <button id="btn-comunidade" class="btn-icon btn-desktop-only btn-comunidade-trigger" title="Comunidade" aria-label="Abrir a Comunidade"><i class="fas fa-users"></i><span class="comunidade-badge hidden">0</span></button>
                 <button id="btn-mini-youtube" class="btn-icon btn-desktop-only btn-mini-youtube" title="Mini YouTube" aria-label="Abrir o Mini YouTube"><i class="fab fa-youtube"></i></button>
                 <button id="btn-favorites" class="btn-icon btn-desktop-only btn-favorites-header" title="Meus Favoritos" aria-label="Meus Favoritos"><i class="fas fa-heart"></i></button>
                 <button id="btn-open-admin" class="btn-admin btn-desktop-only" title="Administração"><i class="fas fa-cog"></i> Admin</button>
@@ -156,6 +159,7 @@
                     <button id="btn-trigger-dropdown-mobile" class="btn-icon" title="Opções" style="font-size: 1.3rem; color: var(--theme-color);"><i class="fas fa-cog"></i></button>
                     
                     <div id="dropdown-menu-mobile" class="dropdown-content-menu hidden">
+                        <button id="btn-comunidade-mobile" class="dropdown-item-btn btn-comunidade-trigger"><i class="fas fa-users"></i> Comunidade<span class="comunidade-badge hidden">0</span></button>
                         <button id="btn-mini-youtube-mobile" class="dropdown-item-btn item-youtube"><i class="fab fa-youtube"></i> Mini YouTube</button>
                         <button id="btn-favorites-mobile" class="dropdown-item-btn"><i class="fas fa-heart"></i> Favoritos</button>
                         <button id="btn-open-admin-mobile" class="dropdown-item-btn"><i class="fas fa-tools"></i> Painel Admin</button>
@@ -283,7 +287,7 @@
     <div id="favorites-modal" class="modal-overlay hidden">
         <div class="modal-box edit-box favorites-box">
             <div class="modal-header">
-                <h3><i class="fas fa-heart"></i> Meus Favoritos</h3>
+                <h3><i class="fas fa-heart"></i> Meus Favoritos <small class="fav-subtitulo">Organize, classifique e toque</small></h3>
                 <button id="btn-close-favorites" class="btn-close">&times;</button>
             </div>
             <div class="modal-body" id="favorites-body"></div>
@@ -622,6 +626,37 @@
                         <label><i class="fas fa-heading"></i> Nome exibido do site</label>
                         <input type="text" id="master-site-name" class="admin-input" placeholder="StreamHub">
                     </div>
+                    <div class="action-card-json">
+                        <label><i class="fas fa-window-maximize"></i> Título do site (aba do navegador)</label>
+                        <input type="text" id="master-site-title" class="admin-input" placeholder="StreamHub by Di Workin'">
+                    </div>
+                    <div class="action-card-json">
+                        <label><i class="fas fa-square"></i> Logo quadrada (link externo ou upload — em branco usa a padrão)</label>
+                        <input type="text" id="master-logo-square" class="admin-input master-img-url" placeholder="https://... ou envie um arquivo">
+                        <div class="master-img-row" style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+                            <input type="file" accept="image/*" class="master-img-file" data-target="master-logo-square">
+                            <button type="button" class="btn-secundary master-img-clear" data-target="master-logo-square">Limpar</button>
+                            <img class="master-img-preview" data-target="master-logo-square" alt="" style="max-height:48px;max-width:200px;display:none;border-radius:4px;">
+                        </div>
+                    </div>
+                    <div class="action-card-json">
+                        <label><i class="fas fa-image"></i> Logo por extenso (substitui o nome escrito no topo — em branco mostra o texto)</label>
+                        <input type="text" id="master-logo-wide" class="admin-input master-img-url" placeholder="https://... ou envie um arquivo">
+                        <div class="master-img-row" style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+                            <input type="file" accept="image/*" class="master-img-file" data-target="master-logo-wide">
+                            <button type="button" class="btn-secundary master-img-clear" data-target="master-logo-wide">Limpar</button>
+                            <img class="master-img-preview" data-target="master-logo-wide" alt="" style="max-height:48px;max-width:200px;display:none;border-radius:4px;">
+                        </div>
+                    </div>
+                    <div class="action-card-json">
+                        <label><i class="fas fa-star"></i> Favicon (link externo ou upload)</label>
+                        <input type="text" id="master-favicon" class="admin-input master-img-url" placeholder="https://... ou envie um arquivo">
+                        <div class="master-img-row" style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+                            <input type="file" accept="image/*,.ico" class="master-img-file" data-target="master-favicon">
+                            <button type="button" class="btn-secundary master-img-clear" data-target="master-favicon">Limpar</button>
+                            <img class="master-img-preview" data-target="master-favicon" alt="" style="max-height:48px;max-width:200px;display:none;border-radius:4px;">
+                        </div>
+                    </div>
                     <button id="btn-master-save-style" class="btn-success-block">Salvar Layout & Estilo Global</button>
                 </div>
 
@@ -670,6 +705,65 @@
                 <button id="btn-master-delete-user" class="btn-default" style="border-radius:4px; background:#c0392b; color:#fff;">Apagar dados</button>
                 <button id="btn-master-save-user" class="btn-success" style="border-radius:4px;">Salvar Usuário</button>
             </div>
+        </div>
+    </div>
+
+    <!-- ================= COMUNIDADE ================= -->
+    <div id="comunidade-screen" class="hidden" role="dialog" aria-label="Comunidade">
+        <div class="com-topo">
+            <h2><i class="fas fa-users"></i>Comunidade</h2>
+            <button id="com-fechar" class="btn-icon" title="Fechar"><i class="fas fa-times"></i></button>
+        </div>
+        <nav class="com-tabs">
+            <button class="com-tab active" data-aba="feed"><i class="fas fa-stream"></i> Feed</button>
+            <button class="com-tab" data-aba="pessoas"><i class="fas fa-search"></i> Pessoas</button>
+            <button class="com-tab" data-aba="amigos"><i class="fas fa-user-friends"></i> Amigos <span class="comunidade-badge hidden" style="position:static;display:inline-flex">0</span></button>
+        </nav>
+        <div class="com-conteudo">
+            <section id="com-painel-feed" class="com-painel">
+                <form id="com-form-post" class="com-card">
+                    <textarea id="com-post-texto" maxlength="2000" placeholder="Compartilhe uma ideia, uma mídia, uma dica..."></textarea>
+                    <input id="com-post-link" class="hidden" type="url" placeholder="Cole um link (YouTube, vídeo MP4, imagem, site...)">
+                    <div id="com-emojis" class="com-emojis hidden"></div>
+                    <div id="com-yt-painel" class="com-subpainel hidden">
+                        <div class="com-subpainel-busca"><input id="com-yt-termo" type="search" placeholder="Pesquisar vídeos no YouTube..."><button type="button" id="com-yt-buscar" class="com-icone"><i class="fas fa-search"></i></button></div>
+                        <div id="com-yt-resultados" class="com-resultados"></div>
+                    </div>
+                    <div id="com-minhas-painel" class="com-subpainel hidden">
+                        <div class="com-subpainel-busca"><input id="com-minhas-termo" type="search" placeholder="Pesquisar mídia, subcategoria ou categoria da sua conta..."></div>
+                        <div id="com-minhas-resultados" class="com-resultados"></div>
+                    </div>
+                    <div id="com-preview"></div>
+                    <div class="com-form-barra">
+                        <label><i class="fas fa-image"></i> Foto<input id="com-arquivo" type="file" accept="image/*" hidden></label>
+                        <button type="button" id="com-btn-link" class="com-icone"><i class="fas fa-link"></i> Link</button>
+                        <button type="button" id="com-btn-yt" class="com-icone"><i class="fab fa-youtube"></i> YouTube</button>
+                        <button type="button" id="com-btn-minhas" class="com-icone"><i class="fas fa-photo-video"></i> Minhas mídias</button>
+                        <button type="button" id="com-btn-emoji" class="com-icone" title="Emojis"><i class="far fa-smile"></i></button>
+                        <button type="submit" id="com-btn-publicar" class="btn-primary">Publicar</button>
+                    </div>
+                </form>
+                <div id="com-feed-lista"></div>
+            </section>
+            <section id="com-painel-pessoas" class="com-painel hidden">
+                <input id="com-busca-pessoas" class="com-busca" placeholder="Buscar pessoas pelo nome...">
+                <div id="com-pessoas-lista"></div>
+            </section>
+            <section id="com-painel-amigos" class="com-painel hidden">
+                <h3 class="com-subtitulo">Pedidos de amizade</h3>
+                <div id="com-pedidos-lista"></div>
+                <h3 class="com-subtitulo">Meus amigos <small>(chat ao vivo liberado)</small></h3>
+                <div id="com-amigos-lista"></div>
+            </section>
+        </div>
+        <div id="com-chat" class="com-chat hidden">
+            <div class="com-chat-topo">
+                <img id="com-chat-avatar" class="com-avatar" src="" alt="">
+                <strong><span id="com-chat-nome"></span><small>Chat ao vivo</small></strong>
+                <button id="com-chat-fechar" class="btn-icon" title="Fechar chat"><i class="fas fa-times"></i></button>
+            </div>
+            <div id="com-chat-msgs"></div>
+            <form id="com-chat-form"><input id="com-chat-input" maxlength="1000" placeholder="Digite uma mensagem..." autocomplete="off"><button type="submit" class="btn-icon"><i class="fas fa-paper-plane"></i></button></form>
         </div>
     </div>
 

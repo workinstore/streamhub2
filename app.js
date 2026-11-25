@@ -1,3 +1,63 @@
+// ===== Balões de aviso estilizados (substituem alert/confirm/prompt nativos) =====
+function uiDialog({ message = "", type = "alert", defaultValue = "" }) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'ui-dialog-overlay';
+        const box = document.createElement('div');
+        box.className = 'ui-dialog-box ui-dialog-' + type;
+        box.setAttribute('role', type === 'alert' ? 'alertdialog' : 'dialog');
+        const icon = { alert: 'fa-circle-info', confirm: 'fa-triangle-exclamation', prompt: 'fa-pen' }[type];
+        const msg = document.createElement('p');
+        msg.className = 'ui-dialog-message';
+        msg.textContent = String(message);
+        box.innerHTML = `<div class="ui-dialog-icon"><i class="fas ${icon}"></i></div>`;
+        box.appendChild(msg);
+        let input = null;
+        if (type === 'prompt') {
+            input = document.createElement('input');
+            input.type = 'text'; input.className = 'ui-dialog-input'; input.value = defaultValue ?? '';
+            box.appendChild(input);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'ui-dialog-actions';
+        const ok = document.createElement('button');
+        ok.type = 'button'; ok.className = 'ui-dialog-btn ui-dialog-btn-primary';
+        ok.textContent = type === 'confirm' ? 'Confirmar' : 'OK';
+        let cancel = null;
+        if (type !== 'alert') {
+            cancel = document.createElement('button');
+            cancel.type = 'button'; cancel.className = 'ui-dialog-btn ui-dialog-btn-secondary';
+            cancel.textContent = 'Cancelar';
+            actions.appendChild(cancel);
+        }
+        actions.appendChild(ok);
+        box.appendChild(actions);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        requestAnimationFrame(() => overlay.classList.add('show'));
+        const close = (val) => {
+            document.removeEventListener('keydown', onKey, true);
+            overlay.classList.remove('show');
+            setTimeout(() => overlay.remove(), 200);
+            resolve(val);
+        };
+        const okVal = () => type === 'prompt' ? input.value : true;
+        const cancelVal = type === 'prompt' ? null : (type === 'confirm' ? false : undefined);
+        const onKey = (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(cancelVal); }
+            else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); close(okVal()); }
+        };
+        document.addEventListener('keydown', onKey, true);
+        ok.addEventListener('click', () => close(okVal()));
+        if (cancel) cancel.addEventListener('click', () => close(cancelVal));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(cancelVal); });
+        setTimeout(() => (input ? (input.focus(), input.select()) : ok.focus()), 50);
+    });
+}
+function uiAlert(message) { return uiDialog({ message, type: 'alert' }); }
+function uiConfirm(message) { return uiDialog({ message, type: 'confirm' }); }
+function uiPrompt(message, defaultValue = '') { return uiDialog({ message, type: 'prompt', defaultValue }); }
+
 // ==========================================
 // CONFIGURAÇÃO INICIAL E CREDENCIAIS DO APP
 // ==========================================
@@ -210,6 +270,36 @@ function lerDuracaoDeArquivo(track) {
     });
 }
 
+// ===== VISUALIZAÇÕES =====
+// YouTube: views públicas vindas da API. Links diretos: reproduções do usuário dentro do app.
+const viewsYoutubeCache = {};
+function chaveViewsLocais() { return 'midiaViewsApp_' + (currentUserUid || 'anon'); }
+function lerViewsLocais() { try { return JSON.parse(localStorage.getItem(chaveViewsLocais()) || '{}'); } catch (e) { return {}; } }
+function idViewLocal(track) { return String((track && track.link) || (track && track.título) || ''); }
+function registrarViewLocal(track) {
+    if (!track || extractYoutubeId(track.link || '')) return;
+    const mapa = lerViewsLocais(); const k = idViewLocal(track); if (!k) return;
+    mapa[k] = (mapa[k] || 0) + 1;
+    try { localStorage.setItem(chaveViewsLocais(), JSON.stringify(mapa)); } catch (e) {}
+}
+function formatarViews(n) {
+    if (typeof n !== 'number' || !isFinite(n)) return '';
+    const f = (v, suf) => (v >= 10 ? Math.floor(v) : Math.floor(v * 10) / 10).toString().replace('.', ',') + suf;
+    if (n >= 1e9) return f(n / 1e9, ' bi'); if (n >= 1e6) return f(n / 1e6, ' mi'); if (n >= 1e3) return f(n / 1e3, ' mil');
+    return String(n);
+}
+function seloViews(track) {
+    if (!track) return '';
+    const vid = extractYoutubeId(track.link || '');
+    if (vid) {
+        const n = viewsYoutubeCache[vid];
+        if (n === undefined) return '';
+        return `<span class="views-badge views-yt" title="${n.toLocaleString('pt-BR')} visualizações no YouTube"><i class="fab fa-youtube"></i> ${formatarViews(n)}</span>`;
+    }
+    const n = lerViewsLocais()[idViewLocal(track)] || 0;
+    return `<span class="views-badge views-app" title="${n} reprodução(ões) suas no app"><i class="fas fa-eye"></i> ${formatarViews(n)}</span>`;
+}
+
 async function garantirDuracoes(lista) {
     if (buscandoDuracoes) return;
     const pendentesYt = []; const pendentesArquivo = [];
@@ -225,10 +315,11 @@ async function garantirDuracoes(lista) {
         for (let i = 0; i < pendentesYt.length; i += 50) {
             const bloco = pendentesYt.slice(i, i + 50);
             try {
-                const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${bloco.join(',')}&key=${CONFIG.YT_API_KEY}`);
+                const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id=${bloco.join(',')}&key=${CONFIG.YT_API_KEY}`);
                 const data = await res.json();
                 (data.items || []).forEach(item => {
                     duracoesCache[`yt:${item.id}`] = iso8601ParaSegundos(item.contentDetails && item.contentDetails.duration);
+                    if (item.statistics && item.statistics.viewCount !== undefined) viewsYoutubeCache[item.id] = Number(item.statistics.viewCount);
                 });
             } catch (e) {}
             bloco.forEach(id => { if (duracoesCache[`yt:${id}`] === undefined) duracoesCache[`yt:${id}`] = null; });
@@ -551,8 +642,10 @@ function checkSession() {
             }
 
             initApp();
+            esconderCarregandoLogin();
             return;
         }
+        esconderCarregandoLogin();
         limparInterfaceLocal();
     });
 }
@@ -569,20 +662,39 @@ function configurarEventosLogin() {
     if (btnLogin) { btnLogin.onclick = (e) => { e.preventDefault(); handleLogin(); }; }
 }
 
+// Tela de carregamento com animação spin exibida durante o login
+function mostrarCarregandoLogin(texto) {
+    let ov = document.getElementById('login-loading-overlay');
+    if (!ov) {
+        ov = document.createElement('div');
+        ov.id = 'login-loading-overlay';
+        ov.innerHTML = '<div class="login-loading-box"><div class="login-spinner"></div><p class="login-loading-text"></p></div>';
+        document.body.appendChild(ov);
+    }
+    ov.querySelector('.login-loading-text').textContent = texto || 'Entrando...';
+    requestAnimationFrame(() => ov.classList.add('ativo'));
+}
+function esconderCarregandoLogin() {
+    const ov = document.getElementById('login-loading-overlay');
+    if (ov) ov.classList.remove('ativo');
+}
+
 function handleLogin() {
     const elUser = document.getElementById('login-user');
     const elPass = document.getElementById('login-pass');
     if(!elUser || !elPass) return;
     const inputEmail = elUser.value.trim().toLowerCase();
     const inputPass = elPass.value.trim();
-    if (!inputEmail || !inputPass) return alert("Preencha todos os campos!");
+    if (!inputEmail || !inputPass) return uiAlert("Preencha todos os campos!");
     
     const btnLogin = document.getElementById('btn-login');
     btnLogin.innerText = "Autenticando..."; btnLogin.disabled = true;
+    mostrarCarregandoLogin("Autenticando...");
 
     firebase.auth().signInWithEmailAndPassword(inputEmail, inputPass)
         .catch((error) => {
-            alert("Erro na Autenticação: " + error.message);
+            esconderCarregandoLogin();
+            uiAlert("Erro na Autenticação: " + error.message);
             btnLogin.innerText = "Entrar"; btnLogin.disabled = false;
         });
 }
@@ -593,19 +705,19 @@ function handlePasswordRecovery() {
     if (!elEmail) return;
     
     const email = elEmail.value.trim().toLowerCase();
-    if (!email) return alert("Por favor, digite o seu e-mail cadastrado!");
+    if (!email) return uiAlert("Por favor, digite o seu e-mail cadastrado!");
     
     const btnRecover = document.getElementById('btn-recover-submit');
     btnRecover.innerText = "Enviando link..."; btnRecover.disabled = true;
     
     firebase.auth().sendPasswordResetEmail(email)
         .then(() => {
-            alert(`Link de redefinição enviado com sucesso para: ${email}\nVerifique a sua caixa de entrada ou spam!`);
+            uiAlert(`Link de redefinição enviado com sucesso para: ${email}\nVerifique a sua caixa de entrada ou spam!`);
             document.getElementById('form-recuperar-fluxo').reset();
             alternarAbasLogin('login'); // Retorna automaticamente para a tela de login
         })
         .catch((error) => {
-            alert("Erro ao solicitar link: " + error.message);
+            uiAlert("Erro ao solicitar link: " + error.message);
         })
         .finally(() => {
             btnRecover.innerText = "Enviar Link de Recuperação"; btnRecover.disabled = false;
@@ -815,6 +927,7 @@ function createCard(title, imgSrc, showAddButton = false, isPlaylist = false, cl
         const seg = duracaoDaFaixa(favInfo.track || shareInfo || {});
         const txt = formatarDuracao(seg);
         if (txt) selo = `<span class="duration-badge"><i class="fas fa-clock"></i> ${txt}</span>`;
+        selo += seloViews(favInfo.track || shareInfo);
     }
     const vidCard = extractYoutubeId((shareInfo && shareInfo.link) || '') || extractYoutubeId(imgSrc || '');
     const srcCard = (!imgSrc && vidCard) ? thumbAltaPorId(vidCard) : (imgSrc || 'https://placehold.co/160x90?text=Sem+Capa');
@@ -847,31 +960,31 @@ function createCard(title, imgSrc, showAddButton = false, isPlaylist = false, cl
     }
     const mediaDelete = card.querySelector('.media-delete-badge');
     if (mediaDelete && realIndex >= 0) {
-        mediaDelete.addEventListener('click', (e) => {
+        mediaDelete.addEventListener('click', async (e) => {
             e.preventDefault(); e.stopPropagation();
-            if (confirm(`Excluir a mídia "${title}"?`)) deletarMidiaUnica(realIndex);
+            if (await uiConfirm(`Excluir a mídia "${title}"?`)) deletarMidiaUnica(realIndex);
         });
     }
     const collectionEdit = card.querySelector('.collection-edit-btn');
     if (collectionEdit && favInfo) {
-        collectionEdit.addEventListener('click', (e) => {
+        collectionEdit.addEventListener('click', async (e) => {
             e.preventDefault(); e.stopPropagation();
             if (favInfo.tipo === 'categoria') {
-                const novoNome = prompt('Novo nome para a Categoria:', favInfo.categoria);
+                const novoNome = await uiPrompt('Novo nome para a Categoria:', favInfo.categoria);
                 if (novoNome && novoNome.trim() && novoNome.trim() !== favInfo.categoria) renomearCategoriaCompleta(favInfo.categoria, novoNome.trim());
             } else {
-                const novoNome = prompt('Novo nome para a Subcategoria:', favInfo.subcategoria);
+                const novoNome = await uiPrompt('Novo nome para a Subcategoria:', favInfo.subcategoria);
                 if (novoNome && novoNome.trim() && novoNome.trim() !== favInfo.subcategoria) renomearSubcategoriaCompleta(favInfo.categoria, favInfo.subcategoria, novoNome.trim());
             }
         });
     }
     const collectionDelete = card.querySelector('.collection-delete-btn');
     if (collectionDelete && favInfo) {
-        collectionDelete.addEventListener('click', (e) => {
+        collectionDelete.addEventListener('click', async (e) => {
             e.preventDefault(); e.stopPropagation();
             if (favInfo.tipo === 'categoria') {
-                if (confirm(`Excluir a categoria "${favInfo.categoria}" e todo o seu conteúdo?`)) deletarCategoriaCompleta(favInfo.categoria);
-            } else if (confirm(`Excluir a subcategoria "${favInfo.subcategoria}" e todo o seu conteúdo?`)) {
+                if (await uiConfirm(`Excluir a categoria "${favInfo.categoria}" e todo o seu conteúdo?`)) deletarCategoriaCompleta(favInfo.categoria);
+            } else if (await uiConfirm(`Excluir a subcategoria "${favInfo.subcategoria}" e todo o seu conteúdo?`)) {
                 deletarSubcategoria(favInfo.categoria, favInfo.subcategoria);
             }
         });
@@ -922,7 +1035,7 @@ function configurarEventosBuscaCanal() {
     const executarBusca = async (e) => {
         if(e) e.preventDefault();
         const termo = input?.value.trim();
-        if(!termo) return alert("Digite o nome do canal.");
+        if(!termo) return uiAlert("Digite o nome do canal.");
         
         scrollContainer.innerHTML = '<h3>Buscando...</h3>';
         scrollContainer.style.display = 'block';
@@ -1014,8 +1127,8 @@ async function searchYouTubeGlobal(query) {
 async function peekPlaylistContents(playlistId) {
     try {
         const res = await fetch(`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${playlistId}&key=${CONFIG.YT_API_KEY}`); const data = await res.json();
-        if(data.items) { alert(`Mídias:\n\n` + data.items.map((item, idx) => `${idx + 1}. ${item.snippet.title}`).join('\n').substring(0, 1200)); }
-    } catch(e) { alert("Erro playlist."); }
+        if(data.items) { uiAlert(`Mídias:\n\n` + data.items.map((item, idx) => `${idx + 1}. ${item.snippet.title}`).join('\n').substring(0, 1200)); }
+    } catch(e) { uiAlert("Erro playlist."); }
 }
 
 function inicializarSeletorCoresLinear() {
@@ -1092,6 +1205,7 @@ function extractPlaylistId(url) { const reg = /[&?]list=([^#\&\?]+)/; const matc
 
 function playTrack(index) {
     if(currentPlaylist.length === 0) return; currentTrackIndex = index; const track = currentPlaylist[index];
+    try { registrarViewLocal(track); const sv = document.querySelectorAll('.card .views-app'); if (sv.length) setTimeout(() => { try { renderMosaic(); } catch (e) {} }, 0); } catch (e) {}
     if (reproducaoAleatoria && !jaSorteadas.includes(index)) jaSorteadas.push(index);
     if (document.getElementById('player-container')) document.getElementById('player-container').classList.remove('hidden');
     if (document.getElementById('current-track-title')) document.getElementById('current-track-title').innerText = track.título;
@@ -1201,7 +1315,7 @@ function renderCrudManager() {
 
     categories.sort().forEach(cat => {
         if(!cat) return;
-        const catRow = createCrudRow(cat, 'categoria', () => { let n = prompt("Novo nome para a Categoria:", cat); if(n && n.trim() !== "") renomearCategoriaCompleta(cat, n.trim()); }, () => { if(confirm(`Excluir ${cat}?`)) deletarCategoriaCompleta(cat); }, () => downloadJSON(montarPacoteBackup(database.filter(item => item.categoria === cat), [cat]), `cat_${cat}`));
+        const catRow = createCrudRow(cat, 'categoria', async () => { let n = await uiPrompt("Novo nome para a Categoria:", cat); if(n && n.trim() !== "") renomearCategoriaCompleta(cat, n.trim()); }, async () => { if(await uiConfirm(`Excluir ${cat}?`)) deletarCategoriaCompleta(cat); }, () => downloadJSON(montarPacoteBackup(database.filter(item => item.categoria === cat), [cat]), `cat_${cat}`));
         const subContainer = document.createElement('div'); subContainer.style.display = expandedCrudCats[cat] ? 'block' : 'none';
         
         catRow.addEventListener('click', (e) => { 
@@ -1215,7 +1329,7 @@ function renderCrudManager() {
         const nodeName = btoa(unescape(encodeURIComponent(cat))).replace(/=/g, ""); if(canaisDinamicos[nodeName]) subcategories.push("Vídeos Recentes");
 
         subcategories.sort().forEach(sub => {
-            const subRow = createCrudRow(sub, 'subcategoria', sub === "Vídeos Recentes" ? null : () => { let n = prompt("Novo nome para a Subcategoria:", sub); if(n && n.trim() !== "") renomearSubcategoriaCompleta(cat, sub, n.trim()); }, () => { if(confirm(`Excluir a subcategoria ${sub}?`)) deletarSubcategoria(cat, sub); }, () => downloadJSON(montarPacoteBackup(database.filter(item => item.categoria === cat && item.subcategoria === sub), sub === "Vídeos Recentes" ? [cat] : []), `sub_${sub}`));
+            const subRow = createCrudRow(sub, 'subcategoria', sub === "Vídeos Recentes" ? null : async () => { let n = await uiPrompt("Novo nome para a Subcategoria:", sub); if(n && n.trim() !== "") renomearSubcategoriaCompleta(cat, sub, n.trim()); }, async () => { if(await uiConfirm(`Excluir a subcategoria ${sub}?`)) deletarSubcategoria(cat, sub); }, () => downloadJSON(montarPacoteBackup(database.filter(item => item.categoria === cat && item.subcategoria === sub), sub === "Vídeos Recentes" ? [cat] : []), `sub_${sub}`));
             const mediaContainer = document.createElement('div'); mediaContainer.style.display = expandedCrudSubs[cat + '_' + sub] ? 'block' : 'none';
             
             subRow.addEventListener('click', (e) => { 
@@ -1230,7 +1344,7 @@ function renderCrudManager() {
             } else {
                 database.forEach((item, idx) => {
                     if(item.categoria === cat && item.subcategoria === sub) {
-                        mediaContainer.appendChild(createCrudRow(item.título, 'mídia', () => openAdvancedEditModal(idx), () => { if(confirm(`Excluir a mídia: ${item.título}?`)) deletarMidiaUnica(idx); }, () => downloadJSON(item, item.título)));
+                        mediaContainer.appendChild(createCrudRow(item.título, 'mídia', () => openAdvancedEditModal(idx), async () => { if(await uiConfirm(`Excluir a mídia: ${item.título}?`)) deletarMidiaUnica(idx); }, () => downloadJSON(item, item.título)));
                     }
                 });
             }
@@ -1262,7 +1376,7 @@ async function renomearCategoriaCompleta(antiga, nova) {
         } 
         await recarregarDadosDoBanco(); 
         renderCrudManager(); 
-    } catch(e){ console.error("Erro ao renomear categoria:", e); alert("Erro ao renomear categoria: " + e.message); } 
+    } catch(e){ console.error("Erro ao renomear categoria:", e); uiAlert("Erro ao renomear categoria: " + e.message); } 
 }
 
 function openAdvancedEditModal(index) {
@@ -1276,12 +1390,12 @@ function openAdvancedEditModal(index) {
 async function saveAdvancedEditChanges(e) {
     if(e) e.preventDefault();
     if (activeEditingIndex === null || !database[activeEditingIndex]) {
-        return alert("Não foi possível identificar a mídia em edição. Reabra a edição e tente novamente.");
+        return uiAlert("Não foi possível identificar a mídia em edição. Reabra a edição e tente novamente.");
     }
     const t = document.getElementById('edit-field-title').value.trim(); const l = document.getElementById('edit-field-link').value.trim();
     const c = document.getElementById('edit-field-capa').value.trim(); const cat = document.getElementById('edit-field-category').value.trim();
     const sub = document.getElementById('edit-field-subcategory').value.trim();
-    if(!t || !l || !cat) return alert("Preencha os campos!");
+    if(!t || !l || !cat) return uiAlert("Preencha os campos!");
 
     const btnSalvar = document.getElementById('btn-submit-edit-media');
     const textoOriginal = btnSalvar ? btnSalvar.innerHTML : "";
@@ -1297,11 +1411,11 @@ async function saveAdvancedEditChanges(e) {
         activeEditingIndex = null;
         await recarregarDadosDoBanco();
         renderCrudManager();
-        alert("Alteração salva com sucesso!");
+        uiAlert("Alteração salva com sucesso!");
     } catch (err) {
         // Desfaz a alteração local se a gravação remota falhar
         database[activeEditingIndex] = itemOriginal;
-        alert("Erro ao salvar: " + err.message);
+        uiAlert("Erro ao salvar: " + err.message);
     } finally {
         if (btnSalvar) { btnSalvar.disabled = false; btnSalvar.innerHTML = textoOriginal; }
     }
@@ -1310,7 +1424,7 @@ async function saveAdvancedEditChanges(e) {
 async function saveMediaToDatabase(e) {
     if(e) e.preventDefault(); const url = document.getElementById('manual-media-url').value.trim(); 
     const categoria = document.getElementById('media-category').value.trim(); const subcategoria = document.getElementById('media-subcategory').value.trim();
-    if(!url || !categoria) return alert("Preencha os campos."); const pId = extractPlaylistId(url); const btnSave = document.getElementById('btn-save-media');
+    if(!url || !categoria) return uiAlert("Preencha os campos."); const pId = extractPlaylistId(url); const btnSave = document.getElementById('btn-save-media');
 
     try {
         if(pId) {
@@ -1325,24 +1439,24 @@ async function saveMediaToDatabase(e) {
                 database.push({ título, link: linkVideo, capa, categoria, subcategoria });
             }
             await empurrarBancoIntegralParaServidor();
-            alert(`Sucesso! Foram importados ${data.items.length} vídeos.`);
+            uiAlert(`Sucesso! Foram importados ${data.items.length} vídeos.`);
         } else {
             const título = document.getElementById('prev-title').value.trim() || "Nova Mídia"; 
             const capa = document.getElementById('prev-thumb').src;
             database.push({ título, link: url, capa, categoria, subcategoria });
             await empurrarBancoIntegralParaServidor();
-            alert("Vídeo salvo!");
+            uiAlert("Vídeo salvo!");
         }
         document.getElementById('manual-media-url').value = ""; 
         document.getElementById('admin-modal')?.classList.add('hidden');
         await recarregarDadosDoBanco();
-    } catch (err) { alert("Erro: " + err.message); } finally { btnSave.innerText = "Salvar no meu Firebase"; btnSave.disabled = false; }
+    } catch (err) { uiAlert("Erro: " + err.message); } finally { btnSave.innerText = "Salvar no meu Firebase"; btnSave.disabled = false; }
 }
 
 async function processarInjecaoDeDadosAcumulativa(novosItens, novosCanais = []) {
     novosItens = Array.isArray(novosItens) ? novosItens.filter(n => n && n.link) : [];
     novosCanais = Array.isArray(novosCanais) ? novosCanais.filter(c => c && c.channelId && c.categoria) : [];
-    if (novosItens.length === 0 && novosCanais.length === 0) return alert("Nenhum dado válido para importar.");
+    if (novosItens.length === 0 && novosCanais.length === 0) return uiAlert("Nenhum dado válido para importar.");
     try {
         if (novosItens.length > 0) {
             const res = await dbFetch(CONFIG.FIREBASE_URL); const data = await res.json(); let bancoAtual = [];
@@ -1373,8 +1487,8 @@ async function processarInjecaoDeDadosAcumulativa(novosItens, novosCanais = []) 
         if (novosCanais.length > 0) await carregarCanaisDinamicos();
         await recarregarDadosDoBanco();
         renderCrudManager();
-        alert(`Importação concluída! Total de mídias: ${database.length}` + (novosCanais.length ? ` | Canais vinculados importados: ${canaisGravados}/${novosCanais.length}` : ""));
-    } catch(e) { alert("Falha na mesclagem de dados. " + (e && e.message ? e.message : "")); }
+        uiAlert(`Importação concluída! Total de mídias: ${database.length}` + (novosCanais.length ? ` | Canais vinculados importados: ${canaisGravados}/${novosCanais.length}` : ""));
+    } catch(e) { uiAlert("Falha na mesclagem de dados. " + (e && e.message ? e.message : "")); }
 }
 
 /* ---------- BACKUP: mídias + canais vinculados ---------- */
@@ -1432,12 +1546,12 @@ async function empurrarBancoIntegralParaServidor() {
 async function deletarMidiaUnica(indexNoBanco) {
     const backup = database.slice();
     try { database.splice(indexNoBanco, 1); await empurrarBancoIntegralParaServidor(); await recarregarDadosDoBanco(); renderCrudManager(); }
-    catch(e){ database = backup; alert("Erro ao excluir mídia: " + e.message); }
+    catch(e){ database = backup; uiAlert("Erro ao excluir mídia: " + e.message); }
 }
 async function deletarSubcategoria(cat, sub) {
     const backup = database.slice();
     try { database = database.filter(item => !(item.categoria === cat && item.subcategoria === sub)); await empurrarBancoIntegralParaServidor(); await recarregarDadosDoBanco(); renderCrudManager(); }
-    catch(e){ database = backup; alert("Erro ao excluir subcategoria: " + e.message); }
+    catch(e){ database = backup; uiAlert("Erro ao excluir subcategoria: " + e.message); }
 }
 async function deletarCategoriaCompleta(cat) { 
     try { 
@@ -1451,7 +1565,7 @@ async function deletarCategoriaCompleta(cat) {
         selectedSubcategory = ''; 
         await recarregarDadosDoBanco(); 
         renderCrudManager(); 
-    } catch(e){ console.error("Erro ao deletar categoria completa:", e); alert("Erro ao excluir categoria: " + e.message); } 
+    } catch(e){ console.error("Erro ao deletar categoria completa:", e); uiAlert("Erro ao excluir categoria: " + e.message); } 
 }
 
 async function renomearSubcategoriaCompleta(cat, antigaSub, novaSub) {
@@ -1460,7 +1574,7 @@ async function renomearSubcategoriaCompleta(cat, antigaSub, novaSub) {
         await empurrarBancoIntegralParaServidor();
         await recarregarDadosDoBanco();
         renderCrudManager();
-    } catch(e){ alert("Erro ao renomear subcategoria: " + e.message); }
+    } catch(e){ uiAlert("Erro ao renomear subcategoria: " + e.message); }
 }
 // Alias mantido para compatibilidade com chamadas antigas
 const renameSubcategoryComplete = renomearSubcategoriaCompleta;
@@ -1588,15 +1702,15 @@ async function renderizarListaUsuariosPedidosExclusao() {
 }
 
 async function processarExclusaoDefinitivaPeloMaster(uidUsuarioAlvo) {
-    if (!confirm("Atenção Admin: Deseja apagar permanentemente todas as mídias e preferências deste usuário do banco? (Lembre-se de deletar a credencial dele no painel Firebase Auth)")) return;
+    if (!await uiConfirm("Atenção Admin: Deseja apagar permanentemente todas as mídias e preferências deste usuário do banco? (Lembre-se de deletar a credencial dele no painel Firebase Auth)")) return;
     
     try {
         const urlBaseBanco = firebaseConfig.databaseURL.replace(/\/$/, "");
         await dbFetch(`${urlBaseBanco}/usuarios/${uidUsuarioAlvo}.json`, { method: "DELETE" });
-        alert("Dados do Realtime Database removidos com sucesso!");
+        uiAlert("Dados do Realtime Database removidos com sucesso!");
         renderizarListaUsuariosPedidosExclusao();
     } catch(e) {
-        alert("Erro técnico ao limpar nó do usuário.");
+        uiAlert("Erro técnico ao limpar nó do usuário.");
     }
 }
 
@@ -1617,11 +1731,13 @@ function setupEventListeners() {
             const btnGoogle = e.target.closest('#btn-google-login');
             btnGoogle.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Conectando...';
             btnGoogle.disabled = true;
+            mostrarCarregandoLogin("Conectando com o Google...");
 
             firebase.auth().signInWithPopup(googleProvider)
                 .then((resultado) => { guardarTokenGoogle(resultado); })
                 .catch((error) => {
-                    alert("Erro ao logar com o Google: " + error.message);
+                    esconderCarregandoLogin();
+                    uiAlert("Erro ao logar com o Google: " + error.message);
                     btnGoogle.innerHTML = '<i class="fab fa-google"></i> Entrar com o Google';
                     btnGoogle.disabled = false;
                 });
@@ -1684,7 +1800,7 @@ function setupEventListeners() {
             }
 
             if(!canalSelecionadoProvisorio || !catDestino) {
-                return alert("Por favor, selecione um canal e defina/selecione uma categoria válida.");
+                return uiAlert("Por favor, selecione um canal e defina/selecione uma categoria válida.");
             }
 
             try {
@@ -1701,7 +1817,7 @@ function setupEventListeners() {
                 const respCanal = await dbFetch(urlCanalIndividual, { method: "PUT", body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' } });
                 if (!respCanal.ok) throw new Error(`Falha ao gravar o canal (HTTP ${respCanal.status}).`);
                 
-                alert(`Canal vinculado com sucesso na categoria "${catDestino}"!`);
+                uiAlert(`Canal vinculado com sucesso na categoria "${catDestino}"!`);
                 
                 document.getElementById("channel-preview").style.display = "none"; 
                 document.getElementById('search-channel-input').value = "";
@@ -1713,25 +1829,25 @@ function setupEventListeners() {
                 canalSelecionadoProvisorio = null; 
                 initApp();
             } catch(err) { 
-                alert("Erro ao salvar canal: " + err.message); 
+                uiAlert("Erro ao salvar canal: " + err.message); 
             }
         }
 
         if (e.target.closest('#btn-request-delete-account')) {
             e.preventDefault();
-            if (!confirm("Tem certeza absoluta de que deseja solicitar a exclusão da sua conta? Seu acervo e preferências serão agendados para eliminação pelo administrador.")) return;
+            if (!await uiConfirm("Tem certeza absoluta de que deseja solicitar a exclusão da sua conta? Seu acervo e preferências serão agendados para eliminação pelo administrador.")) return;
             
             try {
                 await salvarPreferenciaNoFirebase({ solicitou_exclusao: true });
-                alert("Sua solicitação de exclusão foi enviada com sucesso! Você pode fechar o site ou deslogar.");
+                uiAlert("Sua solicitação de exclusão foi enviada com sucesso! Você pode fechar o site ou deslogar.");
                 fecharModalPerfil();
             } catch(err) {
-                alert("Falha ao registrar pedido.");
+                uiAlert("Falha ao registrar pedido.");
             }
         }
         
         if (e.target.closest('#btn-fetch-manual')) {
-            const url = document.getElementById('manual-media-url').value.trim(); if(!url) return alert("Insira uma URL.");
+            const url = document.getElementById('manual-media-url').value.trim(); if(!url) return uiAlert("Insira uma URL.");
             const btn = e.target.closest('#btn-fetch-manual'); btn.innerText = "Buscando..."; const vId = extractYoutubeId(url);
             try {
                 if (vId) {
@@ -1741,10 +1857,10 @@ function setupEventListeners() {
             } catch(err) {} finally { btn.innerText = "Capturar Dados"; }
         }
 
-        if (e.target.closest('#btn-export-all-json')) { if (database.length > 0 || Object.keys(canaisDinamicos || {}).length > 0) downloadJSON(montarPacoteBackup(database, null), "backup_completo_streamhub"); else alert("Banco vazio!"); }
+        if (e.target.closest('#btn-export-all-json')) { if (database.length > 0 || Object.keys(canaisDinamicos || {}).length > 0) downloadJSON(montarPacoteBackup(database, null), "backup_completo_streamhub"); else uiAlert("Banco vazio!"); }
         if (e.target.closest('#btn-submit-json-code')) {
-            const val = document.getElementById('json-input-field')?.value.trim(); if(!val) return alert("Cole o código JSON");
-            try { let p = lerPacoteImportado(JSON.parse(val)); await processarInjecaoDeDadosAcumulativa(p.itens, p.canais); document.getElementById('json-input-field').value = ""; } catch(err) { alert("JSON inválido."); }
+            const val = document.getElementById('json-input-field')?.value.trim(); if(!val) return uiAlert("Cole o código JSON");
+            try { let p = lerPacoteImportado(JSON.parse(val)); await processarInjecaoDeDadosAcumulativa(p.itens, p.canais); document.getElementById('json-input-field').value = ""; } catch(err) { uiAlert("JSON inválido."); }
         }
         
         if (e.target.closest('#btn-reset-theme')) {
@@ -1829,10 +1945,10 @@ function setupEventListeners() {
             }
             
             if (!novoNome || !novoSobrenome) {
-                return alert("Os campos Nome e Sobrenome não podem ficar vazios!");
+                return uiAlert("Os campos Nome e Sobrenome não podem ficar vazios!");
             }
             if (novoWhatsapp && !whatsappEhValido(novoWhatsapp)) {
-                return alert("Informe um WhatsApp válido com DDD, no formato (99) 99999-9999.");
+                return uiAlert("Informe um WhatsApp válido com DDD, no formato (99) 99999-9999.");
             }
             
             const btnSaveProf = document.getElementById('btn-save-profile-changes');
@@ -1856,11 +1972,11 @@ function setupEventListeners() {
                 const elTxt = document.getElementById('user-top-name');
                 if (elTxt) elTxt.innerText = `Olá, ${novoNome}!`;
                 
-                alert("Perfil e preferências salvos com sucesso!");
+                uiAlert("Perfil e preferências salvos com sucesso!");
                 fecharModalPerfil();
                 
             } catch (err) {
-                alert("Erro ao salvar alterações do perfil: " + err.message);
+                uiAlert("Erro ao salvar alterações do perfil: " + err.message);
             } finally {
                 btnSaveProf.innerText = "Salvar Alterações"; btnSaveProf.disabled = false;
             }
@@ -1945,7 +2061,7 @@ function setupEventListeners() {
     document.getElementById('file-import-json')?.addEventListener('change', (e) => {
         const file = e.target.files[0]; if (!file) return; const reader = new FileReader();
         reader.onload = async (evt) => {
-            try { let p = lerPacoteImportado(JSON.parse(evt.target.result)); await processarInjecaoDeDadosAcumulativa(p.itens, p.canais); e.target.value = ""; } catch(err) { alert("Erro de arquivo."); }
+            try { let p = lerPacoteImportado(JSON.parse(evt.target.result)); await processarInjecaoDeDadosAcumulativa(p.itens, p.canais); e.target.value = ""; } catch(err) { uiAlert("Erro de arquivo."); }
         }; reader.readAsText(file);
     });
 
@@ -1989,25 +2105,25 @@ if (waButton) {
             const uf = lerValorCampo('register-uf');
             
             if(!nome || !sobrenome || !email || !senha) {
-                return alert("Por favor, preencha todos os campos do cadastro!");
+                return uiAlert("Por favor, preencha todos os campos do cadastro!");
             }
             if(!whatsapp || !cidade || !uf) {
-                return alert("Informe também o seu WhatsApp, a cidade e a UF.");
+                return uiAlert("Informe também o seu WhatsApp, a cidade e a UF.");
             }
             if(!whatsappEhValido(whatsapp)) {
-                return alert("Informe um WhatsApp válido com DDD, no formato (99) 99999-9999.");
+                return uiAlert("Informe um WhatsApp válido com DDD, no formato (99) 99999-9999.");
             }
             
             // TRAVA DE PROVEDOR REAL: Aplica a validação do front-end
             if (!verificarProvedorValido(email)) {
-                return alert("Cadastro Bloqueado!\nPor razões de segurança e viabilidade de recuperação de senha, use um e-mail válido pertencente aos grandes provedores (Gmail, Hotmail, Outlook, Yahoo, iCloud, UOL, BOL ou IG).");
+                return uiAlert("Cadastro Bloqueado!\nPor razões de segurança e viabilidade de recuperação de senha, use um e-mail válido pertencente aos grandes provedores (Gmail, Hotmail, Outlook, Yahoo, iCloud, UOL, BOL ou IG).");
             }
 
             if(senha.length < 6) {
-                return alert("A senha precisa ter no mínimo 6 caracteres!");
+                return uiAlert("A senha precisa ter no mínimo 6 caracteres!");
             }
             if(senha !== senhaConfirm) {
-                return alert("As senhas digitadas não batem! Verifique a confirmação.");
+                return uiAlert("As senhas digitadas não batem! Verifique a confirmação.");
             }
             
             const btnReg = document.getElementById('btn-register-submit');
@@ -2036,13 +2152,13 @@ if (waButton) {
                     headers: { 'Content-Type': 'application/json' }
                 });
                 
-                alert(`Conta criada com absoluto sucesso, ${nome}! Seja bem-vindo.`);
+                uiAlert(`Conta criada com absoluto sucesso, ${nome}! Seja bem-vindo.`);
                 
                 document.getElementById('form-cadastro-fluxo').reset();
                 alternarAbasLogin('login');
                 
             } catch(error) {
-                alert("Erro ao realizar cadastro: " + error.message);
+                uiAlert("Erro ao realizar cadastro: " + error.message);
             } finally {
                 btnReg.innerText = "Criar Minha Conta"; btnReg.disabled = false;
             }
@@ -2449,7 +2565,7 @@ async function pedirLoginGoogleParaComentar() {
         montarCaixaDeComentario();
         return true;
     } catch (e) {
-        alert("Não foi possível autorizar sua conta Google para comentar: " + (e.message || e));
+        uiAlert("Não foi possível autorizar sua conta Google para comentar: " + (e.message || e));
         return false;
     }
 }
@@ -2505,17 +2621,17 @@ async function enviarComentarioNoVideo() {
             if (res.status === 401 || res.status === 403) {
                 googleAccessToken = null;
                 try { sessionStorage.removeItem("gToken"); } catch (e) {}
-                alert("Sua autorização do Google expirou. Entre novamente com o Google para comentar.");
+                uiAlert("Sua autorização do Google expirou. Entre novamente com o Google para comentar.");
                 montarCaixaDeComentario();
             } else {
-                alert("Não foi possível publicar o comentário: " + (dados.error.message || "erro desconhecido"));
+                uiAlert("Não foi possível publicar o comentário: " + (dados.error.message || "erro desconhecido"));
             }
             return;
         }
         campo.value = "";
         await carregarComentariosDoVideo(videoIdEmExibicao);
     } catch (e) {
-        alert("Erro de rede ao publicar o comentário.");
+        uiAlert("Erro de rede ao publicar o comentário.");
     } finally {
         if (botao) { botao.disabled = false; botao.innerHTML = '<i class="fas fa-paper-plane"></i> Comentar'; }
     }
@@ -2649,11 +2765,79 @@ function aplicarConfigGlobal() {
     document.getElementById("btn-open-admin")?.classList.toggle("hidden", !podeAdmin);
     document.getElementById("btn-open-admin-mobile")?.classList.toggle("hidden", !podeAdmin);
 
-    if (c.siteNome) {
-        const titulo = document.getElementById("bc-root");
-        if (titulo) titulo.innerText = c.siteNome;
+    aplicarIdentidadeVisual(c);
+}
+
+// Logos, título e favicon configurados no painel gerencial (link externo ou base64)
+const LOGO_QUADRADA_PADRAO = "logo.png";
+const TITULO_PADRAO_SITE = document.title || "StreamHub";
+function aplicarIdentidadeVisual(c) {
+    c = c || {};
+    const nome = c.siteNome || "StreamHub";
+    const titulo = document.getElementById("bc-root");
+    if (titulo) {
+        if (c.logoExtenso) {
+            titulo.innerHTML = "";
+            const img = document.createElement("img");
+            img.src = c.logoExtenso;
+            img.alt = nome;
+            img.className = "brand-logo-extenso";
+            img.style.cssText = "max-height:23px;max-width:220px;height:auto;display:block;cursor:pointer;";
+            img.onerror = () => { titulo.innerText = nome; };
+            titulo.appendChild(img);
+            titulo.setAttribute("aria-label", nome);
+        } else {
+            titulo.innerText = nome;
+        }
+    }
+    const quadrada = c.logoQuadrada || LOGO_QUADRADA_PADRAO;
+    document.querySelectorAll("img[data-logo-quadrada]").forEach(img => {
+        img.onerror = () => { img.onerror = null; img.src = LOGO_QUADRADA_PADRAO; };
+        img.src = quadrada;
+    });
+    document.title = c.siteTitulo || TITULO_PADRAO_SITE;
+    if (c.favicon) {
+        let link = document.querySelector("link[rel~='icon']");
+        if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
+        link.removeAttribute("type");
+        link.href = c.favicon;
     }
 }
+
+function atualizarPreviewImagemMaster(id) {
+    const input = document.getElementById(id);
+    const prev = document.querySelector(`.master-img-preview[data-target="${id}"]`);
+    if (!input || !prev) return;
+    const v = input.value.trim();
+    prev.style.display = v ? "" : "none";
+    if (v) prev.src = v; else prev.removeAttribute("src");
+}
+
+document.addEventListener("change", async (e) => {
+    const f = e.target.closest && e.target.closest(".master-img-file");
+    if (!f || !f.files || !f.files[0]) return;
+    const arquivo = f.files[0];
+    if (arquivo.size > 1024 * 1024 && !await uiConfirm("A imagem tem mais de 1 MB e deixará o site mais lento. Continuar?")) { f.value = ""; return; }
+    const leitor = new FileReader();
+    leitor.onload = () => {
+        const alvo = document.getElementById(f.getAttribute("data-target"));
+        if (alvo) { alvo.value = leitor.result; atualizarPreviewImagemMaster(alvo.id); }
+    };
+    leitor.readAsDataURL(arquivo);
+});
+document.addEventListener("input", (e) => {
+    if (e.target.classList && e.target.classList.contains("master-img-url")) atualizarPreviewImagemMaster(e.target.id);
+});
+document.addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest(".master-img-clear");
+    if (!b) return;
+    const id = b.getAttribute("data-target");
+    const alvo = document.getElementById(id);
+    if (alvo) alvo.value = "";
+    const f = document.querySelector(`.master-img-file[data-target="${id}"]`);
+    if (f) f.value = "";
+    atualizarPreviewImagemMaster(id);
+});
 
 /* ---------------------- PAINEL GERENCIAL DO ADMIN ---------------------- */
 
@@ -2673,7 +2857,7 @@ function alternarBotoesAdminMaster() {
 }
 
 function abrirPainelMaster() {
-    if (!ehAdminMaster()) return alert("Acesso restrito ao administrador.");
+    if (!ehAdminMaster()) return uiAlert("Acesso restrito ao administrador.");
     document.getElementById("master-modal")?.classList.remove("hidden");
     inicializarCamposContato();
     trocarAbaMaster("m-users-tab", "tab-trigger-m-users");
@@ -2764,7 +2948,7 @@ function abrirEdicaoUsuarioMaster(uid) {
 async function salvarUsuarioMaster() {
     if (!uidUsuarioEmEdicaoMaster) return;
     const whatsMaster = lerValorCampo("mu-whatsapp");
-    if (whatsMaster && !whatsappEhValido(whatsMaster)) return alert("WhatsApp inválido. Use o formato (99) 99999-9999.");
+    if (whatsMaster && !whatsappEhValido(whatsMaster)) return uiAlert("WhatsApp inválido. Use o formato (99) 99999-9999.");
     const dados = {
         nome: document.getElementById("mu-name").value.trim(),
         sobrenome: document.getElementById("mu-lastname").value.trim(),
@@ -2780,19 +2964,19 @@ async function salvarUsuarioMaster() {
         await dbFetch(`${urlRaizBanco()}/usuarios/${uidUsuarioEmEdicaoMaster}.json`, {
             method: "PATCH", body: JSON.stringify(dados), headers: { "Content-Type": "application/json" }
         });
-        alert("Usuário atualizado com sucesso!");
+        uiAlert("Usuário atualizado com sucesso!");
         document.getElementById("master-edit-user-modal")?.classList.add("hidden");
         renderizarUsuariosMaster();
-    } catch (e) { alert("Erro ao salvar usuário: " + e.message); }
+    } catch (e) { uiAlert("Erro ao salvar usuário: " + e.message); }
 }
 
 async function excluirUsuarioMaster(uid) {
-    if (!confirm("Apagar TODOS os dados deste usuário no banco? (a credencial no Firebase Auth deve ser removida no console)")) return;
+    if (!await uiConfirm("Apagar TODOS os dados deste usuário no banco? (a credencial no Firebase Auth deve ser removida no console)")) return;
     try {
         await dbFetch(`${urlRaizBanco()}/usuarios/${uid}.json`, { method: "DELETE" });
         document.getElementById("master-edit-user-modal")?.classList.add("hidden");
         renderizarUsuariosMaster();
-    } catch (e) { alert("Erro ao apagar dados."); }
+    } catch (e) { uiAlert("Erro ao apagar dados."); }
 }
 
 // Cria contas sem derrubar a sessão do admin (usa uma instância secundária do Firebase)
@@ -2804,9 +2988,9 @@ async function cadastrarUsuarioPeloMaster() {
     const whatsapp = lerValorCampo("master-new-whatsapp");
     const cidade = lerValorCampo("master-new-cidade");
     const uf = lerValorCampo("master-new-uf");
-    if (!nome || !email || senha.length < 6) return alert("Preencha nome, e-mail e uma senha de no mínimo 6 caracteres.");
-    if (!whatsapp || !cidade || !uf) return alert("Informe também o WhatsApp, a cidade e a UF do novo usuário.");
-    if (!whatsappEhValido(whatsapp)) return alert("WhatsApp inválido. Use o formato (99) 99999-9999.");
+    if (!nome || !email || senha.length < 6) return uiAlert("Preencha nome, e-mail e uma senha de no mínimo 6 caracteres.");
+    if (!whatsapp || !cidade || !uf) return uiAlert("Informe também o WhatsApp, a cidade e a UF do novo usuário.");
+    if (!whatsappEhValido(whatsapp)) return uiAlert("WhatsApp inválido. Use o formato (99) 99999-9999.");
 
     const btn = document.getElementById("btn-master-create-user");
     btn.innerText = "Cadastrando..."; btn.disabled = true;
@@ -2830,12 +3014,12 @@ async function cadastrarUsuarioPeloMaster() {
             })
         });
         await appSecundario.auth().signOut();
-        alert(`Usuário ${nome} cadastrado com sucesso!`);
+        uiAlert(`Usuário ${nome} cadastrado com sucesso!`);
         ["master-new-name", "master-new-lastname", "master-new-email", "master-new-pass", "master-new-whatsapp", "master-new-cidade", "master-new-uf"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
         trocarAbaMaster("m-users-tab", "tab-trigger-m-users");
         renderizarUsuariosMaster();
     } catch (e) {
-        alert("Erro ao cadastrar usuário: " + e.message);
+        uiAlert("Erro ao cadastrar usuário: " + e.message);
     } finally {
         btn.innerText = "Cadastrar Novo Usuário"; btn.disabled = false;
     }
@@ -2850,6 +3034,13 @@ function preencherFormularioEstiloMaster() {
     if (hex) hex.innerText = cor.toUpperCase();
     const nome = document.getElementById("master-site-name");
     if (nome) nome.value = c.siteNome || "StreamHub";
+    const tituloSite = document.getElementById("master-site-title");
+    if (tituloSite) tituloSite.value = c.siteTitulo || "";
+    [["master-logo-square", "logoQuadrada"], ["master-logo-wide", "logoExtenso"], ["master-favicon", "favicon"]].forEach(([id, k]) => {
+        const el = document.getElementById(id);
+        if (el) el.value = c[k] || "";
+        atualizarPreviewImagemMaster(id);
+    });
 
     document.querySelectorAll(".master-theme-btn").forEach(b => {
         const val = b.getAttribute("data-theme") === "youtube" ? "" : `theme-${b.getAttribute("data-theme")}`;
@@ -2874,8 +3065,8 @@ async function salvarConfigGlobal(parcial) {
         });
         configGlobalSite = { ...configGlobalSite, ...parcial };
         aplicarConfigGlobal();
-        alert("Configurações salvas com sucesso!");
-    } catch (e) { alert("Erro ao salvar configurações globais."); }
+        uiAlert("Configurações salvas com sucesso!");
+    } catch (e) { uiAlert("Erro ao salvar configurações globais."); }
 }
 
 /* ---------------------- EVENTOS DOS NOVOS RECURSOS ---------------------- */
@@ -2893,7 +3084,7 @@ document.addEventListener("DOMContentLoaded", () => {
             fotoPerfilTemporaria = base64;
             document.getElementById("profile-photo-preview").src = base64;
             document.getElementById("profile-photo-url").value = "";
-        } catch (err) { alert(err.message); }
+        } catch (err) { uiAlert(err.message); }
         e.target.value = "";
     });
 
@@ -2951,7 +3142,11 @@ document.addEventListener("DOMContentLoaded", () => {
             salvarConfigGlobal({
                 temaPadrao: tema,
                 corPadrao: document.getElementById("master-color-input").value,
-                siteNome: document.getElementById("master-site-name").value.trim() || "StreamHub"
+                siteNome: document.getElementById("master-site-name").value.trim() || "StreamHub",
+                siteTitulo: document.getElementById("master-site-title").value.trim(),
+                logoQuadrada: document.getElementById("master-logo-square").value.trim(),
+                logoExtenso: document.getElementById("master-logo-wide").value.trim(),
+                favicon: document.getElementById("master-favicon").value.trim()
             });
         }
 
@@ -4534,15 +4729,19 @@ document.addEventListener("click", (e) => {
 
 
 // ==========================================
-// FAVORITOS: MIDIAS, CATEGORIAS E SUBCATEGORIAS
+// FAVORITOS: MENU COMPLETO (MIDIAS, CATEGORIAS, SUBCATEGORIAS, PASTAS E NOTAS)
 // ==========================================
-let favoritos = { midias: [], categorias: [], subcategorias: [] };
+let favoritos = { midias: [], categorias: [], subcategorias: [], pastas: [] };
+let favUI = { aba: 'midias', busca: '', ordem: 'recentes', pasta: '__todas', filtroNota: 0, selecionados: new Set() };
 
 function carregarFavoritosDoPerfil(dados) {
+    const agora = Date.now();
+    const arr = (v) => Array.isArray(v) ? v : [];
     favoritos = {
-        midias: Array.isArray(dados && dados.midias) ? dados.midias : [],
-        categorias: Array.isArray(dados && dados.categorias) ? dados.categorias : [],
-        subcategorias: Array.isArray(dados && dados.subcategorias) ? dados.subcategorias : []
+        midias: arr(dados && dados.midias).map((m, i) => Object.assign({ nota: 0, pasta: '', adicionadoEm: agora - i }, m)),
+        categorias: arr(dados && dados.categorias).map((c, i) => Object.assign({ nota: 0, adicionadoEm: agora - i }, c)),
+        subcategorias: arr(dados && dados.subcategorias).map((c, i) => Object.assign({ nota: 0, adicionadoEm: agora - i }, c)),
+        pastas: arr(dados && dados.pastas)
     };
     atualizarBotaoFavoritoDoPlayer();
 }
@@ -4570,21 +4769,22 @@ function ehFavorito(info) {
 function alternarFavorito(info) {
     if (!info) return;
     const jaEra = ehFavorito(info);
+    const agora = Date.now();
     if (info.tipo === 'categoria') {
         favoritos.categorias = jaEra
             ? favoritos.categorias.filter(c => c.categoria !== info.categoria)
-            : favoritos.categorias.concat([{ categoria: info.categoria, capa: capaDaCategoria(info.categoria) }]);
+            : favoritos.categorias.concat([{ categoria: info.categoria, capa: capaDaCategoria(info.categoria), nota: 0, adicionadoEm: agora }]);
     } else if (info.tipo === 'subcategoria') {
         favoritos.subcategorias = jaEra
             ? favoritos.subcategorias.filter(c => !(c.categoria === info.categoria && c.subcategoria === info.subcategoria))
-            : favoritos.subcategorias.concat([{ categoria: info.categoria, subcategoria: info.subcategoria, capa: capaDaSubcategoria(info.categoria, info.subcategoria) }]);
+            : favoritos.subcategorias.concat([{ categoria: info.categoria, subcategoria: info.subcategoria, capa: capaDaSubcategoria(info.categoria, info.subcategoria), nota: 0, adicionadoEm: agora }]);
     } else {
         const t = info.track || {};
         const link = (t.link || '').trim();
         if (!link) return;
         favoritos.midias = jaEra
             ? favoritos.midias.filter(m => (m.link || '').trim() !== link)
-            : favoritos.midias.concat([{ título: t.título || t.titulo || 'Mídia', link: link, capa: t.capa || '', categoria: t.categoria || '', subcategoria: t.subcategoria || '' }]);
+            : favoritos.midias.concat([{ título: t.título || t.titulo || 'Mídia', link: link, capa: t.capa || '', categoria: t.categoria || '', subcategoria: t.subcategoria || '', nota: 0, pasta: '', adicionadoEm: agora }]);
     }
     salvarFavoritos();
     atualizarBotaoFavoritoDoPlayer();
@@ -4607,6 +4807,7 @@ function capaDaSubcategoria(cat, sub) {
 }
 
 function abrirModalFavoritos() {
+    favUI.selecionados = new Set();
     renderizarFavoritos();
     document.getElementById('favorites-modal')?.classList.remove('hidden');
 }
@@ -4615,52 +4816,375 @@ function fecharModalFavoritos() {
     document.getElementById('favorites-modal')?.classList.add('hidden');
 }
 
+// ---------- Utilidades do menu ----------
+function favEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function favIdPasta() { return 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+function favNomePasta(id) { const p = favoritos.pastas.find(x => x.id === id); return p ? p.nome : ''; }
+
+async function favCriarPasta(nomeSugerido) {
+    const nome = (await uiPrompt('Nome da nova pasta:', nomeSugerido || '') || '').trim();
+    if (!nome) return null;
+    if (favoritos.pastas.some(p => p.nome.toLowerCase() === nome.toLowerCase())) { uiAlert('Já existe uma pasta com esse nome.'); return null; }
+    const cores = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c'];
+    const pasta = { id: favIdPasta(), nome, cor: cores[favoritos.pastas.length % cores.length], criadaEm: Date.now() };
+    favoritos.pastas.push(pasta);
+    salvarFavoritos();
+    return pasta;
+}
+async function favRenomearPasta(id) {
+    const p = favoritos.pastas.find(x => x.id === id); if (!p) return;
+    const nome = (await uiPrompt('Novo nome da pasta:', p.nome) || '').trim();
+    if (!nome) return;
+    p.nome = nome; salvarFavoritos(); renderizarFavoritos();
+}
+async function favExcluirPasta(id) {
+    const p = favoritos.pastas.find(x => x.id === id); if (!p) return;
+    if (!await uiConfirm(`Excluir a pasta "${p.nome}"? As mídias continuam nos favoritos, apenas saem da pasta.`)) return;
+    favoritos.pastas = favoritos.pastas.filter(x => x.id !== id);
+    favoritos.midias.forEach(m => { if (m.pasta === id) m.pasta = ''; });
+    if (favUI.pasta === id) favUI.pasta = '__todas';
+    salvarFavoritos(); renderizarFavoritos();
+}
+async function favMoverParaPasta(midias, pastaId) {
+    if (pastaId === '__nova') { const p = await favCriarPasta(); if (!p) { renderizarFavoritos(); return; } pastaId = p.id; }
+    midias.forEach(m => { m.pasta = pastaId || ''; });
+    salvarFavoritos(); renderizarFavoritos();
+}
+function favDefinirNota(item, nota) {
+    item.nota = item.nota === nota ? 0 : nota;
+    salvarFavoritos(); renderizarFavoritos();
+}
+function favTocarLista(lista, aleatorio) {
+    if (!lista.length) return;
+    let fila = lista.slice();
+    if (aleatorio) for (let i = fila.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [fila[i], fila[j]] = [fila[j], fila[i]]; }
+    currentPlaylist = fila;
+    fecharModalFavoritos();
+    playTrack(0);
+}
+function favOrdenar(lista, titulo) {
+    const l = lista.slice();
+    const tit = (x) => (titulo(x) || '').toLowerCase();
+    switch (favUI.ordem) {
+        case 'antigos': l.sort((a, b) => (a.adicionadoEm || 0) - (b.adicionadoEm || 0)); break;
+        case 'az': l.sort((a, b) => tit(a).localeCompare(tit(b), 'pt-BR')); break;
+        case 'za': l.sort((a, b) => tit(b).localeCompare(tit(a), 'pt-BR')); break;
+        case 'nota': l.sort((a, b) => (b.nota || 0) - (a.nota || 0) || (b.adicionadoEm || 0) - (a.adicionadoEm || 0)); break;
+        default: l.sort((a, b) => (b.adicionadoEm || 0) - (a.adicionadoEm || 0));
+    }
+    return l;
+}
+function favFiltrar(lista, campos) {
+    const q = favUI.busca.trim().toLowerCase();
+    return lista.filter(x => (!q || campos(x).join(' ').toLowerCase().includes(q)) && (x.nota || 0) >= favUI.filtroNota);
+}
+function favExportar() {
+    const blob = new Blob([JSON.stringify(favoritos, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'streamhub-favoritos.json'; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function favImportar() {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/json,.json';
+    inp.onchange = () => {
+        const f = inp.files && inp.files[0]; if (!f) return;
+        const r = new FileReader();
+        r.onload = () => {
+            try {
+                const d = JSON.parse(r.result);
+                const links = new Set(favoritos.midias.map(m => (m.link || '').trim()));
+                (d.pastas || []).forEach(p => { if (p && p.id && !favoritos.pastas.some(x => x.id === p.id)) favoritos.pastas.push(p); });
+                (d.midias || []).forEach(m => { if (m && m.link && !links.has(m.link.trim())) favoritos.midias.push(m); });
+                (d.categorias || []).forEach(c => { if (c && !favoritos.categorias.some(x => x.categoria === c.categoria)) favoritos.categorias.push(c); });
+                (d.subcategorias || []).forEach(c => { if (c && !favoritos.subcategorias.some(x => x.categoria === c.categoria && x.subcategoria === c.subcategoria)) favoritos.subcategorias.push(c); });
+                salvarFavoritos(); renderizarFavoritos(); try { renderMosaic(); } catch (e) {}
+                uiAlert('Favoritos importados com sucesso!');
+            } catch (e) { uiAlert('Arquivo inválido.'); }
+        };
+        r.readAsText(f);
+    };
+    inp.click();
+}
+async function favLimparTudo() {
+    if (!await uiConfirm('Remover TODOS os favoritos e pastas? Essa ação não pode ser desfeita.')) return;
+    favoritos = { midias: [], categorias: [], subcategorias: [], pastas: [] };
+    salvarFavoritos(); atualizarBotaoFavoritoDoPlayer(); try { renderMosaic(); } catch (e) {} renderizarFavoritos();
+}
+
+function favEstrelas(nota) {
+    let h = '<div class="fav-estrelas" title="Sua nota">';
+    for (let i = 1; i <= 5; i++) h += `<button type="button" class="fav-estrela${i <= (nota || 0) ? ' on' : ''}" data-nota="${i}" aria-label="Nota ${i}"><i class="${i <= (nota || 0) ? 'fas' : 'far'} fa-star"></i></button>`;
+    return h + '</div>';
+}
+function favOpcoesPasta(atual) {
+    return `<option value="">Sem pasta</option>` +
+        favoritos.pastas.map(p => `<option value="${favEsc(p.id)}"${p.id === atual ? ' selected' : ''}>${favEsc(p.nome)}</option>`).join('') +
+        `<option value="__nova">+ Nova pasta...</option>`;
+}
+
+// ---------- Render principal ----------
 function renderizarFavoritos() {
     const corpo = document.getElementById('favorites-body');
     if (!corpo) return;
-    corpo.innerHTML = '';
+    const nMid = favoritos.midias.length, nCat = favoritos.categorias.length, nSub = favoritos.subcategorias.length, nPas = favoritos.pastas.length;
 
-    const total = favoritos.categorias.length + favoritos.subcategorias.length + favoritos.midias.length;
+    const abas = [
+        ['midias', 'fa-play-circle', 'Mídias', nMid],
+        ['pastas', 'fa-folder', 'Pastas', nPas],
+        ['categorias', 'fa-th-large', 'Categorias', nCat],
+        ['subcategorias', 'fa-layer-group', 'Subcategorias', nSub]
+    ];
+
+    corpo.innerHTML = `
+        <div class="fav-menu-abas">${abas.map(a => `<button type="button" class="fav-aba${favUI.aba === a[0] ? ' ativa' : ''}" data-aba="${a[0]}"><i class="fas ${a[1]}"></i> ${a[2]} <span>${a[3]}</span></button>`).join('')}</div>
+        <div class="fav-toolbar">
+            <div class="fav-busca"><i class="fas fa-search"></i><input type="text" id="fav-busca-input" placeholder="Buscar nos favoritos..." value="${favEsc(favUI.busca)}"></div>
+            <select id="fav-ordem" title="Ordenar">
+                <option value="recentes">Mais recentes</option><option value="antigos">Mais antigos</option>
+                <option value="az">A → Z</option><option value="za">Z → A</option><option value="nota">Maior nota</option>
+            </select>
+            <select id="fav-filtro-nota" title="Filtrar por nota">
+                <option value="0">Todas as notas</option><option value="1">★ 1+</option><option value="2">★ 2+</option>
+                <option value="3">★ 3+</option><option value="4">★ 4+</option><option value="5">★ 5</option>
+            </select>
+            <div class="fav-mais-wrap">
+                <button type="button" class="fav-btn" id="fav-btn-mais" title="Mais opções"><i class="fas fa-ellipsis-v"></i></button>
+                <div class="fav-mais-menu hidden" id="fav-mais-menu">
+                    <button type="button" data-mais="nova-pasta"><i class="fas fa-folder-plus"></i> Nova pasta</button>
+                    <button type="button" data-mais="exportar"><i class="fas fa-file-export"></i> Exportar favoritos</button>
+                    <button type="button" data-mais="importar"><i class="fas fa-file-import"></i> Importar favoritos</button>
+                    <button type="button" data-mais="limpar" class="perigo"><i class="fas fa-trash"></i> Limpar tudo</button>
+                </div>
+            </div>
+        </div>
+        <div id="fav-conteudo"></div>`;
+
+    corpo.querySelector('#fav-ordem').value = favUI.ordem;
+    corpo.querySelector('#fav-filtro-nota').value = String(favUI.filtroNota);
+
+    corpo.querySelectorAll('.fav-aba').forEach(b => b.addEventListener('click', () => { favUI.aba = b.dataset.aba; favUI.selecionados = new Set(); renderizarFavoritos(); }));
+    const busca = corpo.querySelector('#fav-busca-input');
+    busca.addEventListener('input', () => { favUI.busca = busca.value; renderizarConteudoFavoritos(); });
+    corpo.querySelector('#fav-ordem').addEventListener('change', (e) => { favUI.ordem = e.target.value; renderizarConteudoFavoritos(); });
+    corpo.querySelector('#fav-filtro-nota').addEventListener('change', (e) => { favUI.filtroNota = parseInt(e.target.value, 10) || 0; renderizarConteudoFavoritos(); });
+    const menuMais = corpo.querySelector('#fav-mais-menu');
+    corpo.querySelector('#fav-btn-mais').addEventListener('click', (e) => { e.stopPropagation(); menuMais.classList.toggle('hidden'); });
+    menuMais.addEventListener('click', async (e) => {
+        const b = e.target.closest('[data-mais]'); if (!b) return;
+        menuMais.classList.add('hidden');
+        const a = b.dataset.mais;
+        if (a === 'nova-pasta') { if (await favCriarPasta()) { favUI.aba = 'pastas'; renderizarFavoritos(); } }
+        else if (a === 'exportar') favExportar();
+        else if (a === 'importar') favImportar();
+        else if (a === 'limpar') favLimparTudo();
+    });
+
+    renderizarConteudoFavoritos();
+}
+
+function renderizarConteudoFavoritos() {
+    const alvo = document.getElementById('fav-conteudo');
+    if (!alvo) return;
+    alvo.innerHTML = '';
+    const total = favoritos.categorias.length + favoritos.subcategorias.length + favoritos.midias.length + favoritos.pastas.length;
     if (total === 0) {
-        corpo.innerHTML = '<p class="fav-vazio">Você ainda não favoritou nada. Toque no coração dos cards de mídias, categorias ou subcategorias para salvar aqui.</p>';
+        alvo.innerHTML = '<p class="fav-vazio">Você ainda não favoritou nada. Toque no coração dos cards de mídias, categorias ou subcategorias para salvar aqui. Depois, organize em pastas e dê notas de 1 a 5 estrelas.</p>';
         return;
     }
+    if (favUI.aba === 'pastas') return renderFavPastas(alvo);
+    if (favUI.aba === 'categorias') return renderFavGrupos(alvo, 'categoria');
+    if (favUI.aba === 'subcategorias') return renderFavGrupos(alvo, 'subcategoria');
+    return renderFavMidias(alvo);
+}
 
-    const criarSecao = (titulo, itens, montar) => {
-        if (!itens.length) return;
-        const h = document.createElement('h4');
-        h.className = 'fav-secao-titulo';
-        h.innerText = `${titulo} (${itens.length})`;
-        corpo.appendChild(h);
-        const lista = document.createElement('div');
-        lista.className = 'fav-lista';
-        itens.forEach(item => lista.appendChild(montar(item)));
-        corpo.appendChild(lista);
-    };
+function renderFavMidias(alvo) {
+    // Filtro de pasta
+    const chips = [['__todas', 'Todas', favoritos.midias.length], ['', 'Sem pasta', favoritos.midias.filter(m => !m.pasta).length]]
+        .concat(favoritos.pastas.map(p => [p.id, p.nome, favoritos.midias.filter(m => m.pasta === p.id).length, p.cor]));
+    const barraPastas = document.createElement('div');
+    barraPastas.className = 'fav-chips';
+    barraPastas.innerHTML = chips.map(c => `<button type="button" class="fav-chip${favUI.pasta === c[0] ? ' ativo' : ''}" data-pasta="${favEsc(c[0])}">${c[3] ? `<i class="fas fa-folder" style="color:${favEsc(c[3])}"></i> ` : ''}${favEsc(c[1])} <span>${c[2]}</span></button>`).join('')
+        + `<button type="button" class="fav-chip fav-chip-nova" data-pasta="__nova"><i class="fas fa-plus"></i> Pasta</button>`;
+    barraPastas.addEventListener('click', async (e) => {
+        const b = e.target.closest('.fav-chip'); if (!b) return;
+        if (b.dataset.pasta === '__nova') { const p = await favCriarPasta(); if (p) favUI.pasta = p.id; renderizarFavoritos(); return; }
+        favUI.pasta = b.dataset.pasta; favUI.selecionados = new Set(); renderizarConteudoFavoritos();
+    });
+    alvo.appendChild(barraPastas);
 
-    const linha = (capa, titulo, subtitulo, aoAbrir, aoRemover) => {
+    let lista = favoritos.midias.filter(m => favUI.pasta === '__todas' ? true : (m.pasta || '') === favUI.pasta);
+    lista = favOrdenar(favFiltrar(lista, m => [m.título, m.categoria, m.subcategoria, favNomePasta(m.pasta)]), m => m.título);
+
+    // Ações em massa
+    const acoes = document.createElement('div');
+    acoes.className = 'fav-acoes';
+    const nSel = favUI.selecionados.size;
+    acoes.innerHTML = `
+        <button type="button" class="fav-btn primario" data-acao="tocar"${lista.length ? '' : ' disabled'}><i class="fas fa-play"></i> Tocar tudo</button>
+        <button type="button" class="fav-btn" data-acao="aleatorio"${lista.length ? '' : ' disabled'}><i class="fas fa-random"></i> Aleatório</button>
+        <label class="fav-sel-todos"><input type="checkbox" data-acao="sel-todos"${lista.length && lista.every(m => favUI.selecionados.has(m.link)) ? ' checked' : ''}> Selecionar</label>
+        ${nSel ? `<span class="fav-sel-info">${nSel} selecionada(s)</span>
+            <select class="fav-select" data-acao="mover-massa"><option value="__x">Mover para...</option>${favOpcoesPasta('__x')}</select>
+            <button type="button" class="fav-btn" data-acao="tocar-sel"><i class="fas fa-play"></i></button>
+            <button type="button" class="fav-btn perigo" data-acao="remover-sel"><i class="fas fa-heart-crack"></i></button>` : ''}`;
+    alvo.appendChild(acoes);
+    const selecionadas = () => favoritos.midias.filter(m => favUI.selecionados.has(m.link));
+    acoes.addEventListener('click', async (e) => {
+        const b = e.target.closest('button[data-acao]'); if (!b) return;
+        const a = b.dataset.acao;
+        if (a === 'tocar') favTocarLista(lista, false);
+        else if (a === 'aleatorio') favTocarLista(lista, true);
+        else if (a === 'tocar-sel') favTocarLista(lista.filter(m => favUI.selecionados.has(m.link)), false);
+        else if (a === 'remover-sel') {
+            if (!await uiConfirm(`Remover ${favUI.selecionados.size} mídia(s) dos favoritos?`)) return;
+            favoritos.midias = favoritos.midias.filter(m => !favUI.selecionados.has(m.link));
+            favUI.selecionados = new Set();
+            salvarFavoritos(); atualizarBotaoFavoritoDoPlayer(); try { renderMosaic(); } catch (er) {} renderizarFavoritos();
+        }
+    });
+    acoes.addEventListener('change', (e) => {
+        const a = e.target.dataset.acao;
+        if (a === 'sel-todos') { favUI.selecionados = e.target.checked ? new Set(lista.map(m => m.link)) : new Set(); renderizarConteudoFavoritos(); }
+        else if (a === 'mover-massa' && e.target.value !== '__x') { const s = selecionadas(); favUI.selecionados = new Set(); favMoverParaPasta(s, e.target.value); }
+    });
+
+    if (!lista.length) {
+        const p = document.createElement('p'); p.className = 'fav-vazio';
+        p.innerText = 'Nenhuma mídia encontrada com esses filtros.';
+        alvo.appendChild(p); return;
+    }
+
+    const ul = document.createElement('div');
+    ul.className = 'fav-lista';
+    lista.forEach(m => {
+        const div = document.createElement('div');
+        div.className = 'fav-item fav-item-midia' + (favUI.selecionados.has(m.link) ? ' selecionado' : '');
+        const pastaNome = favNomePasta(m.pasta);
+        div.innerHTML = `
+            <input type="checkbox" class="fav-check"${favUI.selecionados.has(m.link) ? ' checked' : ''} aria-label="Selecionar">
+            <img src="${favEsc(m.capa || 'https://placehold.co/160x90?text=Sem+Capa')}" alt="">
+            <div class="fav-item-info">
+                <strong>${favEsc(m.título)}</strong>
+                <span>${favEsc([m.categoria, m.subcategoria].filter(Boolean).join(' • '))}${pastaNome ? ` <em class="fav-tag-pasta"><i class="fas fa-folder"></i> ${favEsc(pastaNome)}</em>` : ''}</span>
+                ${favEstrelas(m.nota)}
+            </div>
+            <div class="fav-item-acoes">
+                <select class="fav-select fav-mover" title="Mover para pasta">${favOpcoesPasta(m.pasta)}</select>
+                <button type="button" class="fav-icone" data-a="play" title="Tocar"><i class="fas fa-play"></i></button>
+                <button type="button" class="fav-icone" data-a="copiar" title="Copiar link"><i class="fas fa-link"></i></button>
+                <button type="button" class="fav-icone perigo" data-a="remover" title="Remover dos favoritos"><i class="fas fa-heart-crack"></i></button>
+            </div>`;
+        div.addEventListener('click', (e) => {
+            if (e.target.closest('.fav-check, select')) return;
+            const est = e.target.closest('.fav-estrela'); if (est) { e.stopPropagation(); favDefinirNota(m, parseInt(est.dataset.nota, 10)); return; }
+            const b = e.target.closest('[data-a]');
+            const a = b ? b.dataset.a : 'play';
+            if (a === 'play') { currentPlaylist = lista.slice(); fecharModalFavoritos(); playTrack(lista.indexOf(m)); }
+            else if (a === 'copiar') { try { navigator.clipboard.writeText(m.link); b.innerHTML = '<i class="fas fa-check"></i>'; } catch (er) {} }
+            else if (a === 'remover') alternarFavorito({ tipo: 'midia', track: m });
+        });
+        div.querySelector('.fav-check').addEventListener('change', (e) => {
+            if (e.target.checked) favUI.selecionados.add(m.link); else favUI.selecionados.delete(m.link);
+            renderizarConteudoFavoritos();
+        });
+        div.querySelector('.fav-mover').addEventListener('change', (e) => favMoverParaPasta([m], e.target.value));
+        ul.appendChild(div);
+    });
+    alvo.appendChild(ul);
+}
+
+function renderFavPastas(alvo) {
+    const topo = document.createElement('div');
+    topo.className = 'fav-acoes';
+    topo.innerHTML = `<button type="button" class="fav-btn primario"><i class="fas fa-folder-plus"></i> Nova pasta</button>`;
+    topo.querySelector('button').addEventListener('click', async () => { if (await favCriarPasta()) renderizarFavoritos(); });
+    alvo.appendChild(topo);
+
+    const q = favUI.busca.trim().toLowerCase();
+    let pastas = favoritos.pastas.filter(p => !q || p.nome.toLowerCase().includes(q));
+    pastas = favOrdenar(pastas.map(p => Object.assign({}, p, { adicionadoEm: p.criadaEm })), p => p.nome).map(p => favoritos.pastas.find(x => x.id === p.id));
+
+    if (!pastas.length) {
+        const p = document.createElement('p'); p.className = 'fav-vazio';
+        p.innerText = 'Nenhuma pasta ainda. Crie pastas para organizar suas mídias favoritas do seu jeito.';
+        alvo.appendChild(p); return;
+    }
+    const grade = document.createElement('div');
+    grade.className = 'fav-grade-pastas';
+    pastas.forEach(p => {
+        const itens = favoritos.midias.filter(m => m.pasta === p.id);
+        const capas = itens.slice(0, 4).map(m => `<img src="${favEsc(m.capa || 'https://placehold.co/160x90?text=+')}" alt="">`).join('');
+        const card = document.createElement('div');
+        card.className = 'fav-pasta-card';
+        card.style.setProperty('--pasta-cor', p.cor || 'var(--theme-color)');
+        card.innerHTML = `
+            <div class="fav-pasta-capa">${capas || '<i class="fas fa-folder-open"></i>'}</div>
+            <div class="fav-pasta-info"><strong><i class="fas fa-folder"></i> ${favEsc(p.nome)}</strong><span>${itens.length} mídia(s)</span></div>
+            <div class="fav-pasta-acoes">
+                <button type="button" class="fav-icone" data-a="abrir" title="Abrir"><i class="fas fa-folder-open"></i></button>
+                <button type="button" class="fav-icone" data-a="tocar" title="Tocar pasta"${itens.length ? '' : ' disabled'}><i class="fas fa-play"></i></button>
+                <button type="button" class="fav-icone" data-a="aleatorio" title="Tocar aleatório"${itens.length ? '' : ' disabled'}><i class="fas fa-random"></i></button>
+                <label class="fav-icone fav-cor" title="Cor da pasta"><i class="fas fa-palette"></i><input type="color" value="${favEsc(/^#[0-9a-f]{6}$/i.test(p.cor || '') ? p.cor : '#ff0000')}"></label>
+                <button type="button" class="fav-icone" data-a="renomear" title="Renomear"><i class="fas fa-pen"></i></button>
+                <button type="button" class="fav-icone perigo" data-a="excluir" title="Excluir pasta"><i class="fas fa-trash"></i></button>
+            </div>`;
+        card.addEventListener('click', (e) => {
+            if (e.target.closest('.fav-cor')) return;
+            const b = e.target.closest('[data-a]');
+            const a = b ? b.dataset.a : 'abrir';
+            if (a === 'abrir') { favUI.aba = 'midias'; favUI.pasta = p.id; renderizarFavoritos(); }
+            else if (a === 'tocar') favTocarLista(favOrdenar(itens, m => m.título), false);
+            else if (a === 'aleatorio') favTocarLista(itens, true);
+            else if (a === 'renomear') favRenomearPasta(p.id);
+            else if (a === 'excluir') favExcluirPasta(p.id);
+        });
+        card.querySelector('.fav-cor input').addEventListener('change', (e) => { p.cor = e.target.value; salvarFavoritos(); renderizarConteudoFavoritos(); });
+        grade.appendChild(card);
+    });
+    alvo.appendChild(grade);
+}
+
+function renderFavGrupos(alvo, tipo) {
+    const ehCat = tipo === 'categoria';
+    const fonte = ehCat ? favoritos.categorias : favoritos.subcategorias;
+    const titulo = (c) => ehCat ? c.categoria : c.subcategoria;
+    const lista = favOrdenar(favFiltrar(fonte, c => [c.categoria, c.subcategoria]), titulo);
+    if (!lista.length) {
+        const p = document.createElement('p'); p.className = 'fav-vazio';
+        p.innerText = ehCat ? 'Nenhuma categoria favoritada encontrada.' : 'Nenhuma subcategoria favoritada encontrada.';
+        alvo.appendChild(p); return;
+    }
+    const ul = document.createElement('div');
+    ul.className = 'fav-lista';
+    lista.forEach(c => {
         const div = document.createElement('div');
         div.className = 'fav-item';
-        div.innerHTML = `<img src="${capa || 'https://placehold.co/160x90?text=Sem+Capa'}">
-            <div class="fav-item-info"><strong>${titulo}</strong><span>${subtitulo || ''}</span></div>
-            <button type="button" class="fav-item-remove" title="Remover dos favoritos"><i class="fas fa-heart-crack"></i></button>`;
-        div.addEventListener('click', (e) => { if (e.target.closest('.fav-item-remove')) return; aoAbrir(); });
-        div.querySelector('.fav-item-remove').addEventListener('click', (e) => { e.stopPropagation(); aoRemover(); });
-        return div;
-    };
-
-    criarSecao('Categorias', favoritos.categorias, (c) => linha(c.capa, c.categoria, 'Categoria',
-        () => { selectedCategory = c.categoria; selectedSubcategory = ''; currentView = 'subcategories'; fecharModalFavoritos(); renderMosaic(); },
-        () => alternarFavorito({ tipo: 'categoria', categoria: c.categoria })));
-
-    criarSecao('Subcategorias', favoritos.subcategorias, (c) => linha(c.capa, c.subcategoria, c.categoria,
-        () => { selectedCategory = c.categoria; selectedSubcategory = c.subcategoria; currentView = 'tracks'; fecharModalFavoritos(); renderMosaic(); },
-        () => alternarFavorito({ tipo: 'subcategoria', categoria: c.categoria, subcategoria: c.subcategoria })));
-
-    criarSecao('Mídias', favoritos.midias, (m) => linha(m.capa, m.título, [m.categoria, m.subcategoria].filter(Boolean).join(' • '),
-        () => { currentPlaylist = favoritos.midias.slice(); fecharModalFavoritos(); playTrack(favoritos.midias.indexOf(m)); },
-        () => alternarFavorito({ tipo: 'midia', track: m })));
+        div.innerHTML = `<img src="${favEsc(c.capa || 'https://placehold.co/160x90?text=Sem+Capa')}" alt="">
+            <div class="fav-item-info"><strong>${favEsc(titulo(c))}</strong><span>${favEsc(ehCat ? 'Categoria' : c.categoria)}</span>${favEstrelas(c.nota)}</div>
+            <div class="fav-item-acoes">
+                <button type="button" class="fav-icone" data-a="abrir" title="Abrir"><i class="fas fa-arrow-right"></i></button>
+                <button type="button" class="fav-icone perigo" data-a="remover" title="Remover dos favoritos"><i class="fas fa-heart-crack"></i></button>
+            </div>`;
+        div.addEventListener('click', (e) => {
+            const est = e.target.closest('.fav-estrela'); if (est) { favDefinirNota(c, parseInt(est.dataset.nota, 10)); return; }
+            const b = e.target.closest('[data-a]');
+            if (b && b.dataset.a === 'remover') { alternarFavorito(ehCat ? { tipo: 'categoria', categoria: c.categoria } : { tipo: 'subcategoria', categoria: c.categoria, subcategoria: c.subcategoria }); return; }
+            selectedCategory = c.categoria;
+            selectedSubcategory = ehCat ? '' : c.subcategoria;
+            currentView = ehCat ? 'subcategories' : 'tracks';
+            fecharModalFavoritos(); renderMosaic();
+        });
+        ul.appendChild(div);
+    });
+    alvo.appendChild(ul);
 }
+
+document.addEventListener('click', (e) => {
+    const menu = document.getElementById('fav-mais-menu');
+    if (menu && !menu.classList.contains('hidden') && !e.target.closest('.fav-mais-wrap')) menu.classList.add('hidden');
+});
 
 function faixaAtualDoPlayer() {
     return currentPlaylist && currentPlaylist[currentTrackIndex] ? currentPlaylist[currentTrackIndex] : null;
@@ -5021,10 +5545,56 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         nav.pos = nav.pilha.length - 1;
         atualizarSetas();
         salvarPersistencia();
+        gravarUrlGuest(estado);
     }
+
+    // ---------- URL própria para cada ação (#/yt/...) ----------
+    const encY = (v) => encodeURIComponent(String(v == null ? "" : v));
+    const decY = (v) => { try { return decodeURIComponent(v || ""); } catch (e) { return v || ""; } };
+    function hashDoEstado(st) {
+        if (!st) return "#/yt";
+        if (st.tipo === "home") return st.categoriaId ? "#/yt/em-alta/" + encY(st.categoriaId) : "#/yt";
+        if (st.tipo === "search") return "#/yt/busca/" + encY(st.filtro || "video") + "/" + encY(st.query || "");
+        if (st.tipo === "channel") return "#/yt/canal/" + encY(st.id);
+        if (st.tipo === "playlist") return "#/yt/playlist/" + encY(st.id);
+        if (st.tipo === "watch") return "#/yt/video/" + encY(st.id);
+        return "#/yt";
+    }
+    function estadoDoHash(hash) {
+        const h = String(hash || "");
+        if (!/^#\/yt(\/|$)/.test(h)) return null;
+        const p = h.replace(/^#\/yt\/?/, "").split("/");
+        if (!p[0]) return { tipo: "home", categoriaId: "" };
+        if (p[0] === "em-alta") return { tipo: "home", categoriaId: decY(p[1]) };
+        if (p[0] === "busca" && p.length >= 3) return { tipo: "search", filtro: decY(p[1]) || "video", query: decY(p.slice(2).join("/")) };
+        if (p[0] === "canal" && p[1]) return { tipo: "channel", id: decY(p[1]) };
+        if (p[0] === "playlist" && p[1]) return { tipo: "playlist", id: decY(p[1]) };
+        if (p[0] === "video" && p[1]) return { tipo: "watch", id: decY(p[1]) };
+        return { tipo: "home", categoriaId: "" };
+    }
+    window.estadoGuestDoHash = estadoDoHash;
+    function gravarUrlGuest(st) {
+        if (!gs.ativo || !st) return;
+        const destino = hashDoEstado(st);
+        if (location.hash === destino) return;
+        try { history.replaceState(history.state, "", location.pathname + location.search + destino); } catch (e) { }
+    }
+    function limparUrlGuest() {
+        if (!/^#\/yt/.test(location.hash || "")) return;
+        try { history.replaceState(history.state, "", location.pathname + location.search); } catch (e) { }
+    }
+    window.addEventListener("hashchange", () => {
+        const st = estadoDoHash(location.hash);
+        if (!st) return;
+        const atual = nav.pilha[nav.pos];
+        if (gs.ativo && atual && hashDoEstado(atual) === location.hash) return;
+        if (!gs.ativo) { window.abrirModoGuest({ restaurar: false, estadoInicial: st }); return; }
+        aplicarEstado(st).then(() => empilhar(st));
+    });
 
     async function aplicarEstado(st) {
         if (!st) return;
+        gravarUrlGuest(st);
         nav.restaurando = true;
         try {
             if (st.tipo === "home") {
@@ -5102,7 +5672,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
 
     function thumbDe(snippet) {
         const t = snippet?.thumbnails || {};
-        return (t.maxres || t.standard || t.high || t.medium || t.default || {}).url || "https://placehold.co/320x180?text=Sem+capa";
+        return (t.maxres || t.standard || t.high || t.medium || t.default || {}).url || "https://placehold.co/1920x1080?text=Sem+capa";
     }
 
     function numeroCompacto(valor) {
@@ -5145,7 +5715,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
 
     // ---------- bloqueio de recursos que exigem conta ----------
 
-    window.exigirLoginGuest = function (acao, dados) {
+    window.exigirLoginGuest = async function (acao, dados) {
         acaoPendente = dados ? Object.assign({ rotulo: acao || "" }, dados) : (acao ? { rotulo: acao } : null);
         salvarPersistencia();
         const texto = acao ? `Para ${acao} é necessário entrar na sua conta.` : "Esta função é exclusiva para usuários com conta.";
@@ -5154,7 +5724,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
             box.querySelector(".guest-lr-text").innerText = texto;
             box.classList.remove("hidden");
         } else {
-            if (confirm(texto + "\n\nDeseja entrar ou criar sua conta agora?")) sairDoModoGuest("login");
+            if (await uiConfirm(texto + "\n\nDeseja entrar ou criar sua conta agora?")) sairDoModoGuest("login");
         }
     };
 
@@ -5482,17 +6052,17 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
                 if (res.status === 401 || res.status === 403) {
                     googleAccessToken = null;
                     try { sessionStorage.removeItem("gToken"); } catch (e) { }
-                    alert("Sua autorização do Google expirou. Autorize novamente para comentar.");
+                    uiAlert("Sua autorização do Google expirou. Autorize novamente para comentar.");
                     montarComposerGuest();
                 } else {
-                    alert("Não foi possível publicar o comentário: " + (dados.error.message || "erro desconhecido"));
+                    uiAlert("Não foi possível publicar o comentário: " + (dados.error.message || "erro desconhecido"));
                 }
                 return;
             }
             campo.value = "";
             carregarComentariosGuest(videoId);
         } catch (e) {
-            alert("Erro de rede ao publicar o comentário.");
+            uiAlert("Erro de rede ao publicar o comentário.");
         } finally {
             if (botao) { botao.disabled = false; botao.innerHTML = '<i class="fas fa-paper-plane"></i> Comentar'; }
         }
@@ -5533,7 +6103,10 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         const temHistorico = persistido && nav.pilha.length;
         atualizarSetas();
 
-        if (op.restaurar !== false && temHistorico) {
+        if (op.estadoInicial) {
+            nav.restaurando = false;
+            aplicarEstado(op.estadoInicial).then(() => empilhar(op.estadoInicial));
+        } else if (op.restaurar !== false && temHistorico) {
             aplicarEstado(nav.pilha[nav.pos]);
         } else {
             irPara("home");
@@ -5550,6 +6123,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         document.getElementById("guest-container")?.classList.add("hidden");
         document.body.classList.remove("guest-mode-on");
         gs.ativo = false;
+        limparUrlGuest();
         salvarPersistencia({ aberto: false });
         document.getElementById("app-container")?.classList.remove("hidden");
     }
@@ -5562,6 +6136,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         document.getElementById("guest-container")?.classList.add("hidden");
         document.body.classList.remove("guest-mode-on");
         gs.ativo = false;
+        limparUrlGuest();
         if (estaLogado()) {
             document.getElementById("app-container")?.classList.remove("hidden");
             return;
@@ -5926,45 +6501,265 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
     }
     window.abrirCanalGuest = abrirCanal;
 
+    // ---------- filtros / pesquisa dentro do canal ----------
+
+    function segundosDe(iso) {
+        const m = String(iso || "").match(/P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+        if (!m) return 0;
+        return (+m[1] || 0) * 86400 + (+m[2] || 0) * 3600 + (+m[3] || 0) * 60 + (+m[4] || 0);
+    }
+
+    function barraFiltrosCanal(tipo) {
+        const ehVideo = tipo === "videos";
+        const ordens = ehVideo
+            ? [["recentes", "Mais recentes"], ["antigos", "Mais antigos"], ["populares", "Mais vistos"], ["curtidos", "Mais curtidos"], ["titulo", "Título (A-Z)"], ["titulo-desc", "Título (Z-A)"], ["longos", "Maior duração"], ["curtos", "Menor duração"]]
+            : [["recentes", "Mais recentes"], ["antigos", "Mais antigos"], ["titulo", "Título (A-Z)"], ["titulo-desc", "Título (Z-A)"], ["mais-videos", "Mais vídeos"], ["menos-videos", "Menos vídeos"]];
+        const duracoes = ehVideo ? `
+            <select class="guest-chan-select" id="guest-chan-dur" aria-label="Filtrar por duração">
+                <option value="">Qualquer duração</option>
+                <option value="curto">Curtos (até 4 min)</option>
+                <option value="medio">Médios (4 a 20 min)</option>
+                <option value="longo">Longos (mais de 20 min)</option>
+            </select>` : "";
+        return `
+        <div class="guest-chan-toolbar">
+            <form class="guest-chan-search" id="guest-chan-search-form">
+                <i class="fas fa-search"></i>
+                <input type="search" id="guest-chan-search" placeholder="${ehVideo ? "Pesquisar vídeos neste canal" : "Pesquisar playlists neste canal"}" autocomplete="off">
+                <button type="button" class="guest-chan-clear hidden" id="guest-chan-clear" aria-label="Limpar pesquisa"><i class="fas fa-xmark"></i></button>
+            </form>
+            <div class="guest-chan-selects">
+                <select class="guest-chan-select" id="guest-chan-ordem" aria-label="Ordenar">
+                    ${ordens.map(o => `<option value="${o[0]}">${o[1]}</option>`).join("")}
+                </select>
+                ${duracoes}
+            </div>
+        </div>
+        <p class="guest-chan-status" id="guest-chan-status"></p>
+        <div id="guest-chan-list"></div>`;
+    }
+
+    function ligarBarraFiltros(alvo, aoMudar) {
+        const input = alvo.querySelector("#guest-chan-search");
+        const limpar = alvo.querySelector("#guest-chan-clear");
+        const disparar = () => { limpar.classList.toggle("hidden", !input.value); aoMudar(); };
+        alvo.querySelector("#guest-chan-search-form").onsubmit = (ev) => { ev.preventDefault(); disparar(); };
+        let t = null;
+        input.oninput = () => { limpar.classList.toggle("hidden", !input.value); clearTimeout(t); t = setTimeout(disparar, 600); };
+        limpar.onclick = () => { input.value = ""; disparar(); input.focus(); };
+        alvo.querySelector("#guest-chan-ordem").onchange = disparar;
+        const dur = alvo.querySelector("#guest-chan-dur");
+        if (dur) dur.onchange = disparar;
+        return () => ({
+            termo: input.value.trim(),
+            ordem: alvo.querySelector("#guest-chan-ordem").value,
+            duracao: dur ? dur.value : ""
+        });
+    }
+
+    function ordenarItens(lista, ordem, tipo) {
+        const data = x => new Date(x.snippet?.publishedAt || 0).getTime();
+        const titulo = x => decodificarHtml(x.snippet?.title || "").toLowerCase();
+        const l = lista.slice();
+        const cmp = {
+            "recentes": (a, b) => data(b) - data(a),
+            "antigos": (a, b) => data(a) - data(b),
+            "populares": (a, b) => (+b.statistics?.viewCount || 0) - (+a.statistics?.viewCount || 0),
+            "curtidos": (a, b) => (+b.statistics?.likeCount || 0) - (+a.statistics?.likeCount || 0),
+            "titulo": (a, b) => titulo(a).localeCompare(titulo(b), "pt-BR"),
+            "titulo-desc": (a, b) => titulo(b).localeCompare(titulo(a), "pt-BR"),
+            "longos": (a, b) => segundosDe(b.contentDetails?.duration) - segundosDe(a.contentDetails?.duration),
+            "curtos": (a, b) => segundosDe(a.contentDetails?.duration) - segundosDe(b.contentDetails?.duration),
+            "mais-videos": (a, b) => (+b.contentDetails?.itemCount || 0) - (+a.contentDetails?.itemCount || 0),
+            "menos-videos": (a, b) => (+a.contentDetails?.itemCount || 0) - (+b.contentDetails?.itemCount || 0)
+        }[ordem];
+        return cmp ? l.sort(cmp) : l;
+    }
+
+    function passaDuracao(v, faixa) {
+        if (!faixa) return true;
+        const s = segundosDe(v.contentDetails?.duration);
+        if (faixa === "curto") return s > 0 && s <= 240;
+        if (faixa === "medio") return s > 240 && s <= 1200;
+        if (faixa === "longo") return s > 1200;
+        return true;
+    }
+
+    function normalizar(t) {
+        return decodificarHtml(String(t || "")).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    }
+
+    async function detalhesDeVideos(ids) {
+        let out = [];
+        for (let i = 0; i < ids.length; i += 50) {
+            const lote = ids.slice(i, i + 50).join(",");
+            if (!lote) continue;
+            const d = await ytApi("videos", { part: "snippet,statistics,contentDetails", id: lote });
+            out = out.concat(d.items || []);
+        }
+        return out;
+    }
+
     async function abaVideosDoCanal(c) {
         const alvo = document.getElementById("guest-chan-body");
-        alvo.innerHTML = `<div class="guest-loading"><i class="fas fa-circle-notch fa-spin"></i> Carregando vídeos...</div>`;
         const uploads = c.contentDetails?.relatedPlaylists?.uploads || idDoUploads(c.id);
-        gs.nextPageToken = "";
-        const carregar = async (primeira) => {
-            const d = await ytApi("playlistItems", {
-                part: "snippet,contentDetails", playlistId: uploads, maxResults: 24,
-                pageToken: primeira ? "" : gs.nextPageToken
-            });
-            gs.nextPageToken = d.nextPageToken || "";
-            const ids = (d.items || []).map(i => i.contentDetails?.videoId).filter(Boolean).join(",");
-            const det = ids ? (await ytApi("videos", { part: "snippet,statistics,contentDetails", id: ids })).items || [] : [];
-            const html = det.map(cardVideo).join("");
-            if (primeira) alvo.innerHTML = `<div class="guest-grid" id="guest-grid">${html || `<p class="guest-vazio">Este canal não tem vídeos públicos.</p>`}</div>`;
+        alvo.innerHTML = barraFiltrosCanal("videos");
+        const lista = alvo.querySelector("#guest-chan-list");
+        const status = alvo.querySelector("#guest-chan-status");
+        const LIMITE_IDS = 1000;   // teto de vídeos varridos para ordenações completas
+        const POR_PAGINA = 24;
+        let geracao = 0;
+
+        // Estado da consulta atual
+        let st = null;
+
+        const lerFiltros = ligarBarraFiltros(alvo, () => iniciar());
+
+        const renderPagina = async (primeira) => {
+            const minhaGeracao = geracao;
+            let novos = [];
+            if (st.modo === "uploads") {
+                // Paginação direta do upload (mais recentes)
+                while (novos.length < POR_PAGINA && (primeira && !st.inicioFeito || st.token)) {
+                    st.inicioFeito = true;
+                    const d = await ytApi("playlistItems", { part: "contentDetails", playlistId: uploads, maxResults: 50, pageToken: st.token || "" });
+                    st.token = d.nextPageToken || "";
+                    const ids = (d.items || []).map(i => i.contentDetails?.videoId).filter(Boolean);
+                    let det = await detalhesDeVideos(ids);
+                    det = det.filter(v => passaDuracao(v, st.f.duracao));
+                    novos = novos.concat(ordenarItens(det, "recentes"));
+                    if (!st.f.duracao) break;
+                }
+            } else {
+                // Lista completa de IDs já conhecida: ordena/filtra e mostra em fatias
+                while (novos.length < POR_PAGINA && st.cursor < st.ids.length) {
+                    const fatia = st.ids.slice(st.cursor, st.cursor + 50);
+                    st.cursor += fatia.length;
+                    let det = await detalhesDeVideos(fatia);
+                    const ordemIdx = new Map(fatia.map((id, i) => [id, i]));
+                    det.sort((a, b) => ordemIdx.get(a.id) - ordemIdx.get(b.id));
+                    novos = novos.concat(det.filter(v => passaDuracao(v, st.f.duracao)));
+                }
+            }
+            if (minhaGeracao !== geracao) return;
+            const html = novos.map(cardVideo).join("");
+            if (primeira) lista.innerHTML = `<div class="guest-grid" id="guest-grid">${html || `<p class="guest-vazio">Nenhum vídeo encontrado com esses filtros.</p>`}</div>`;
             else document.getElementById("guest-grid").insertAdjacentHTML("beforeend", html);
-            ligarCliquesDosCards(alvo);
-            botaoCarregarMais(() => carregar(false));
+            ligarCliquesDosCards(lista);
+            const temMais = st.modo === "uploads" ? !!st.token : st.cursor < st.ids.length;
+            gs.nextPageToken = temMais ? "mais" : "";
+            botaoCarregarMais(() => renderPagina(false));
         };
-        try { await carregar(true); } catch (e) { alvo.innerHTML = ""; mostrarErroNoBloco(alvo, e); }
+
+        const iniciar = async () => {
+            const minhaGeracao = ++geracao;
+            const f = lerFiltros();
+            st = { f, modo: "uploads", token: "", ids: [], cursor: 0 };
+            areaMais().innerHTML = "";
+            status.textContent = "";
+            lista.innerHTML = `<div class="guest-loading"><i class="fas fa-circle-notch fa-spin"></i> ${f.termo ? "Pesquisando no canal..." : "Carregando vídeos..."}</div>`;
+            try {
+                if (!f.termo && f.ordem === "recentes") {
+                    // caminho rápido
+                } else if (f.termo) {
+                    // Pesquisa dentro do canal (API de busca), depois ordena localmente
+                    let ids = [], token = "";
+                    const ordemApi = f.ordem === "populares" ? "viewCount" : (f.ordem === "titulo" ? "title" : (f.ordem === "recentes" || f.ordem === "antigos" ? "date" : "relevance"));
+                    for (let p = 0; p < 4; p++) {
+                        const d = await ytApi("search", { part: "snippet", type: "video", channelId: c.id, q: f.termo, order: ordemApi, maxResults: 50, pageToken: token });
+                        ids = ids.concat((d.items || []).map(i => i.id?.videoId).filter(Boolean));
+                        token = d.nextPageToken || "";
+                        if (!token) break;
+                    }
+                    if (minhaGeracao !== geracao) return;
+                    const det = await detalhesDeVideos(ids);
+                    const ordenados = ordenarItens(det, f.ordem);
+                    st.modo = "lista";
+                    st.ids = ordenados.map(v => v.id);
+                    status.textContent = `${ordenados.length} resultado(s) para "${f.termo}"`;
+                } else {
+                    // Ordenações que exigem varrer o canal: coleta IDs do upload
+                    let ids = [], token = "";
+                    do {
+                        const d = await ytApi("playlistItems", { part: "contentDetails", playlistId: uploads, maxResults: 50, pageToken: token });
+                        ids = ids.concat((d.items || []).map(i => i.contentDetails?.videoId).filter(Boolean));
+                        token = d.nextPageToken || "";
+                        if (minhaGeracao !== geracao) return;
+                        lista.innerHTML = `<div class="guest-loading"><i class="fas fa-circle-notch fa-spin"></i> Organizando vídeos do canal... (${ids.length})</div>`;
+                    } while (token && ids.length < LIMITE_IDS);
+                    const truncado = !!token;
+                    if (f.ordem === "antigos") {
+                        st.ids = ids.reverse();
+                    } else {
+                        // Para métricas (views, curtidas, duração, título) precisa dos detalhes
+                        const det = await detalhesDeVideos(ids);
+                        if (minhaGeracao !== geracao) return;
+                        st.ids = ordenarItens(det, f.ordem).map(v => v.id);
+                    }
+                    st.modo = "lista";
+                    if (truncado) status.textContent = `Canal muito grande: ordenação aplicada aos ${LIMITE_IDS} vídeos mais recentes${f.ordem === "antigos" ? " (do mais antigo entre eles ao mais novo)" : ""}.`;
+                }
+                if (minhaGeracao !== geracao) return;
+                await renderPagina(true);
+            } catch (e) { if (minhaGeracao === geracao) { lista.innerHTML = ""; mostrarErroNoBloco(lista, e); } }
+        };
+
+        iniciar();
     }
 
     async function abaPlaylistsDoCanal(c) {
         const alvo = document.getElementById("guest-chan-body");
-        alvo.innerHTML = `<div class="guest-loading"><i class="fas fa-circle-notch fa-spin"></i> Carregando playlists...</div>`;
-        gs.nextPageToken = "";
-        const carregar = async (primeira) => {
-            const d = await ytApi("playlists", {
-                part: "snippet,contentDetails", channelId: c.id, maxResults: 24,
-                pageToken: primeira ? "" : gs.nextPageToken
-            });
-            gs.nextPageToken = d.nextPageToken || "";
-            const html = (d.items || []).map(cardPlaylist).join("");
-            if (primeira) alvo.innerHTML = `<div class="guest-grid" id="guest-grid">${html || `<p class="guest-vazio">Este canal não tem playlists públicas.</p>`}</div>`;
+        alvo.innerHTML = barraFiltrosCanal("playlists");
+        const lista = alvo.querySelector("#guest-chan-list");
+        const status = alvo.querySelector("#guest-chan-status");
+        const POR_PAGINA = 24;
+        let todas = null;      // cache de todas as playlists do canal
+        let filtradas = [];
+        let cursor = 0;
+        let geracao = 0;
+
+        const lerFiltros = ligarBarraFiltros(alvo, () => aplicar());
+
+        const mostrarMais = (primeira) => {
+            const fatia = filtradas.slice(cursor, cursor + POR_PAGINA);
+            cursor += fatia.length;
+            const html = fatia.map(cardPlaylist).join("");
+            if (primeira) lista.innerHTML = `<div class="guest-grid" id="guest-grid">${html || `<p class="guest-vazio">Nenhuma playlist encontrada.</p>`}</div>`;
             else document.getElementById("guest-grid").insertAdjacentHTML("beforeend", html);
-            ligarCliquesDosCards(alvo);
-            botaoCarregarMais(() => carregar(false));
+            ligarCliquesDosCards(lista);
+            gs.nextPageToken = cursor < filtradas.length ? "mais" : "";
+            botaoCarregarMais(async () => mostrarMais(false));
         };
-        try { await carregar(true); } catch (e) { alvo.innerHTML = ""; mostrarErroNoBloco(alvo, e); }
+
+        const aplicar = async () => {
+            const minhaGeracao = ++geracao;
+            const f = lerFiltros();
+            areaMais().innerHTML = "";
+            try {
+                if (!todas) {
+                    lista.innerHTML = `<div class="guest-loading"><i class="fas fa-circle-notch fa-spin"></i> Carregando playlists...</div>`;
+                    let acc = [], token = "", p = 0;
+                    do {
+                        const d = await ytApi("playlists", { part: "snippet,contentDetails", channelId: c.id, maxResults: 50, pageToken: token });
+                        acc = acc.concat(d.items || []);
+                        token = d.nextPageToken || "";
+                    } while (token && ++p < 20);
+                    todas = acc;
+                }
+                if (minhaGeracao !== geracao) return;
+                const termoN = normalizar(f.termo);
+                filtradas = ordenarItens(
+                    todas.filter(p => !termoN || normalizar(p.snippet?.title).includes(termoN) || normalizar(p.snippet?.description).includes(termoN)),
+                    f.ordem
+                );
+                status.textContent = f.termo ? `${filtradas.length} playlist(s) para "${f.termo}"` : (todas.length ? `${todas.length} playlist(s) no canal` : "");
+                cursor = 0;
+                if (!todas.length) { lista.innerHTML = `<p class="guest-vazio">Este canal não tem playlists públicas.</p>`; return; }
+                mostrarMais(true);
+            } catch (e) { lista.innerHTML = ""; mostrarErroNoBloco(lista, e); }
+        };
+
+        aplicar();
     }
 
     function abaSobreDoCanal(c) {
@@ -6101,7 +6896,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
                 const url = `https://www.youtube.com/watch?v=${videoId}`;
                 try {
                     if (navigator.share) await navigator.share({ title: decodificarHtml(s.title), url });
-                    else { await navigator.clipboard.writeText(url); alert("Link copiado!"); }
+                    else { await navigator.clipboard.writeText(url); uiAlert("Link copiado!"); }
                 } catch (e) { }
             };
 
@@ -6182,6 +6977,10 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
     function prepararBotaoLogin() {
         const btn = document.getElementById("btn-guest-access");
         if (btn) btn.onclick = (e) => { e.preventDefault(); window.abrirModoGuest({ logado: false }); };
+
+        // Link compartilhado do Mini YouTube (#/yt/...): abre direto, sem exigir login
+        const stLink = estadoDoHash(location.hash);
+        if (stLink) setTimeout(() => window.abrirModoGuest({ restaurar: false, estadoInicial: stLink }), 0);
 
         // Botões "Mini YouTube" da área logada (desktop no cabeçalho, mobile na engrenagem)
         document.addEventListener("click", (e) => {
@@ -6288,9 +7087,23 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         history.pushState({ streamhubGuard: true }, "", location.href);
     } catch (e) {}
 
-    window.addEventListener("popstate", function () {
-        try { desfazerUltimaAcao(); } catch (e) { console.warn("Voltar:", e); }
-        try { history.pushState({ streamhubGuard: true }, "", location.href); } catch (e) {}
+    window.addEventListener("popstate", function (ev) {
+        // Endereço novo digitado/colado na barra: deixa as rotas tratarem
+        // e recoloca a guarda por cima dele.
+        if (!ev.state) {
+            setTimeout(() => { try { history.pushState({ streamhubGuard: true }, "", location.href); } catch (e) {} }, 0);
+            return;
+        }
+        if (!ev.state.streamhubBase) return;
+        let desfez = false;
+        try { desfez = desfazerUltimaAcao(); } catch (e) { console.warn("Voltar:", e); }
+        if (desfez) {
+            // A tela anterior já regravou o endereço; recoloca a guarda com ele
+            try { history.pushState({ streamhubGuard: true }, "", location.href); } catch (e) {}
+        } else {
+            // Nada mais a desfazer: volta normalmente para a página anterior
+            try { history.back(); } catch (e) {}
+        }
     });
 })();
 
@@ -6516,6 +7329,7 @@ function tocarAudioNoPlayer(track, link, rawPlayerEl) {
         if (aplicandoRota) return;
         const destino = rotaAtual();
         const atual = location.hash || "";
+        if (/^#\/yt/.test(atual) && document.body.classList.contains("guest-mode-on")) return;
         if (destino === atual || (!destino && !atual)) return;
         try { history.replaceState(history.state, "", location.pathname + location.search + destino); } catch (e) {}
     }
@@ -6612,7 +7426,7 @@ function rotuloFormatoStream(link, tipo, temVideo) {
     }
     if (ext && EXT_STREAM.test(ext)) return temVideo ? 'VideoTS' : 'AudioTS';
     if (ext) return ext.toUpperCase();
-    return temVideo ? 'IPTV' : 'RÁDIO';
+    return temVideo ? 'IPTV' : 'STREAM';
 }
 function _definirTemVideo(valor) {
     if (valor === null || valor === undefined || streamEstado.temVideo === valor) return;
@@ -6752,7 +7566,7 @@ async function tocarStream(track, link, tipo, video, ehRetentativa) {
     if (ehRetentativa && linkOrig) { streamEstado.link = linkOrig; streamEstado.tipo = tipoOrig; streamEstado.temVideo = videoOrig; }
     else { streamEstado.link = link; streamEstado.tipo = tipo; streamEstado.temVideo = null; }
     const tk = streamEstado.token;
-    const nomes = { hls: 'HLS', dash: 'DASH', flv: 'FLV', mpegts: 'MPEG-TS', radio: 'RÁDIO', playlist: 'PLAYLIST', protocolo: 'RTMP/RTSP', progressivo: 'DIRETO' };
+    const nomes = { hls: 'HLS', dash: 'DASH', flv: 'FLV', mpegts: 'MPEG-TS', radio: 'RADIO', playlist: 'PLAYLIST', protocolo: 'RTMP/RTSP', progressivo: 'DIRETO' };
     mostrarSeloStream(true, nomes[tipo] || 'STREAM', tipo === 'progressivo' ? false : true);
     mostrarStatusStream('Conectando à transmissão...');
     try { atualizarMetadadosDoSistema(track && track.título, 'Ao vivo', capaPadraoDoAudio(track)); } catch (e) {}
@@ -7223,4 +8037,404 @@ async function sondarEReproduzir(track, link, video, iframe, index) {
         ajustarTamanho();
     }
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ligar); else ligar();
+})();
+
+// ==========================================
+// COMUNIDADE: MINI REDE SOCIAL (feed, amizades e chat ao vivo)
+// Usa o Realtime Database em tempo real (firebase-database-compat).
+// Estrutura: comunidade/perfis, posts, pedidos, amigos, chats
+// ==========================================
+(function moduloComunidade() {
+    const C = { uid: null, db: null, perfil: {}, perfis: {}, amigos: {}, pedidos: {}, enviados: {}, aba: "feed", chatCom: null, ouvintes: [], ouvinteChat: null, midia: null };
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const avatar = (p) => (p && p.foto) || "https://placehold.co/80x80/222222/ffffff?text=%F0%9F%91%A4";
+    const nomeDe = (uid) => (C.perfis[uid] && C.perfis[uid].nome) || "Usuário";
+    const tempo = (t) => { const d = (Date.now() - t) / 1000; if (d < 60) return "agora"; if (d < 3600) return Math.floor(d / 60) + " min"; if (d < 86400) return Math.floor(d / 3600) + " h"; return new Date(t).toLocaleDateString("pt-BR"); };
+    const ref = (p) => C.db.ref("comunidade/" + p);
+    const idChat = (a, b) => [a, b].sort().join("_");
+
+    function ouvir(r, ev, fn) { r.on(ev, fn); C.ouvintes.push(() => r.off(ev, fn)); }
+
+    async function iniciar(user) {
+        // O botão fica sempre visível; sem login, o clique pede para entrar.
+        document.querySelectorAll(".btn-comunidade-trigger").forEach((b) => b.classList.remove("hidden"));
+        if (!firebase.database) { console.warn("Comunidade: SDK do Realtime Database não carregado."); return; }
+        C.ouvintes.forEach((f) => f()); C.ouvintes = [];
+        C.uid = user ? user.uid : null;
+        if (!user) { fechar(); return; }
+        C.db = firebase.database();
+        // Publica um perfil público mínimo (nome + foto) para a comunidade
+        try {
+            const snap = await C.db.ref("usuarios/" + C.uid).once("value");
+            const p = snap.val() || {};
+            C.perfil = { nome: ((p.nome || user.displayName || (user.email || "").split("@")[0] || "Usuário") + (p.sobrenome ? " " + p.sobrenome : "")).trim(), foto: p.foto || user.photoURL || "", cidade: p.cidade || "", atualizado: Date.now() };
+        } catch (e) { C.perfil = { nome: user.displayName || (user.email || "Usuário").split("@")[0], foto: user.photoURL || "", atualizado: Date.now() }; }
+        ref("perfis/" + C.uid).update(C.perfil).catch((e) => console.warn("Comunidade perfil:", e));
+        const online = ref("online/" + C.uid);
+        online.set(true).catch(() => {}); online.onDisconnect().remove();
+
+        ouvir(ref("perfis"), "value", (s) => { C.perfis = s.val() || {}; renderizar(); });
+        ouvir(ref("amigos/" + C.uid), "value", (s) => { C.amigos = s.val() || {}; renderizar(); });
+        ouvir(ref("pedidos/" + C.uid), "value", (s) => { C.pedidos = s.val() || {}; atualizarBadge(); renderizar(); });
+        ouvir(ref("enviados/" + C.uid), "value", (s) => { C.enviados = s.val() || {}; renderizar(); });
+        ouvir(ref("online"), "value", (s) => { C.online = s.val() || {}; renderizar(); });
+        ouvir(ref("posts").orderByChild("criado").limitToLast(60), "value", (s) => { C.posts = s.val() || {}; renderizar(); });
+    }
+
+    function atualizarBadge() {
+        const n = Object.keys(C.pedidos || {}).length;
+        document.querySelectorAll(".comunidade-badge").forEach((b) => { b.textContent = n; b.classList.toggle("hidden", !n); });
+    }
+
+    function abrir() {
+        $("dropdown-menu-mobile")?.classList.add("hidden");
+        if (!C.uid) {
+            const u = firebase.auth().currentUser;
+            if (u) { iniciar(u).then(() => C.uid && abrir()); return; }
+            uiAlert("Entre na sua conta para acessar a Comunidade.");
+            return;
+        } $("comunidade-screen").classList.remove("hidden"); document.body.classList.add("comunidade-aberta"); $("dropdown-menu-mobile")?.classList.add("hidden"); trocarAba(C.aba); }
+    function fechar() { $("comunidade-screen")?.classList.add("hidden"); document.body.classList.remove("comunidade-aberta"); fecharChat(); }
+
+    function trocarAba(aba) {
+        C.aba = aba;
+        document.querySelectorAll(".com-tab").forEach((t) => t.classList.toggle("active", t.dataset.aba === aba));
+        document.querySelectorAll(".com-painel").forEach((p) => p.classList.toggle("hidden", p.id !== "com-painel-" + aba));
+        renderizar();
+    }
+
+    function renderizar() {
+        if (!C.uid || $("comunidade-screen")?.classList.contains("hidden")) return;
+        if (C.aba === "feed") renderFeed();
+        if (C.aba === "pessoas") renderPessoas();
+        if (C.aba === "amigos") renderAmigos();
+    }
+
+    /* ---------- AVATAR DE COMENTÁRIO (foto ou iniciais em cor RGB aleatória) ---------- */
+    const coresAvatar = {};
+    function corAleatoria(uid) {
+        if (coresAvatar[uid]) return coresAvatar[uid];
+        const salvas = JSON.parse(localStorage.getItem("com_cores_avatar") || "{}");
+        if (!salvas[uid]) {
+            const r = () => 40 + Math.floor(Math.random() * 176);
+            salvas[uid] = `rgb(${r()}, ${r()}, ${r()})`;
+            try { localStorage.setItem("com_cores_avatar", JSON.stringify(salvas)); } catch (e) {}
+        }
+        return (coresAvatar[uid] = salvas[uid]);
+    }
+    function iniciais(nome) {
+        const partes = String(nome || "U").trim().split(/\s+/).filter(Boolean);
+        return ((partes[0] || "U")[0] + (partes.length > 1 ? partes[partes.length - 1][0] : "")).toUpperCase();
+    }
+    function avatarMini(uid) {
+        const p = C.perfis[uid] || {};
+        if (p.foto) return `<img class="com-avatar-mini" src="${esc(p.foto)}" alt="" onerror="this.outerHTML='<span class=&quot;com-avatar-mini com-avatar-iniciais&quot; style=&quot;background:${corAleatoria(uid)}&quot;>${esc(iniciais(p.nome))}</span>'">`;
+        return `<span class="com-avatar-mini com-avatar-iniciais" style="background:${corAleatoria(uid)}">${esc(iniciais(p.nome))}</span>`;
+    }
+
+    /* ---------- EMOJIS ---------- */
+    const EMOJIS = {
+        "Carinhas": "😀 😃 😄 😁 😆 😅 🤣 😂 🙂 😉 😊 😇 🥰 😍 🤩 😘 😋 😜 🤪 😎 🤓 🥳 😏 😒 😔 😢 😭 😤 😠 😡 🤯 😳 🥺 😱 🤔 🤫 🤭 😴 🤤 😷 🤒 🤠 🤡 👻 💀 👽 🤖 💩",
+        "Gestos": "👍 👎 👏 🙌 🙏 🤝 👌 🤌 ✌️ 🤞 🤟 🤘 👊 ✊ 💪 👋 ☝️ 👆 👇 👉 👈 ✍️ 🫶",
+        "Corações": "❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 💯 💥 💫 ✨ 🔥 ⭐ 🌟",
+        "Mídia": "🎬 🎥 📺 📹 🎞️ 🍿 🎵 🎶 🎤 🎧 🎸 🎹 🥁 🎷 🎺 🎻 📻 🎮 🕹️ 📱 💻 📷 📸 🎙️ 📀 💿",
+        "Diversos": "🎉 🎊 🎁 🏆 ⚽ 🏀 🎯 🚀 ✈️ 🚗 🏠 🌍 🌈 ☀️ 🌙 ⚡ ☔ ❄️ 🌹 🌻 🍕 🍔 🍟 🍫 🍰 ☕ 🍺 🐶 🐱 🦁 🐵 🦄 ✅ ❌ ⚠️ ❓ ❗ 🆕 🆗"
+    };
+    function montarEmojis() {
+        const el = $("com-emojis"); if (el.dataset.ok) return; el.dataset.ok = "1";
+        el.innerHTML = Object.entries(EMOJIS).map(([cat, lista]) => `<div class="com-emoji-cat">${cat}</div>` + lista.split(" ").map((e) => `<button type="button" data-emoji="${e}">${e}</button>`).join("")).join("");
+    }
+    function inserirEmoji(e) {
+        const ta = $("com-post-texto"), ini = ta.selectionStart ?? ta.value.length, fim = ta.selectionEnd ?? ta.value.length;
+        ta.value = ta.value.slice(0, ini) + e + ta.value.slice(fim);
+        ta.focus(); ta.selectionStart = ta.selectionEnd = ini + e.length;
+    }
+
+    /* ---------- PAINÉIS DO FORMULÁRIO ---------- */
+    function alternarPainel(id) {
+        ["com-emojis", "com-yt-painel", "com-minhas-painel"].forEach((p) => { if (p !== id) $(p).classList.add("hidden"); });
+        const el = $(id); el.classList.toggle("hidden");
+        return !el.classList.contains("hidden");
+    }
+    function fecharPaineis() { ["com-emojis", "com-yt-painel", "com-minhas-painel"].forEach((p) => $(p)?.classList.add("hidden")); }
+    function mostrarPrevia(m) {
+        C.midia = m; $("com-post-link").value = ""; $("com-post-link").classList.add("hidden");
+        const rotulo = m.tipo === "colecao" ? ({ midia: "Mídia", subcategoria: "Subcategoria", categoria: "Categoria" }[m.nivel] + ` · ${m.itens.length} mídia(s)`) : "Vídeo do YouTube";
+        $("com-preview").innerHTML = `<div class="com-previa-midia">${m.capa ? `<img src="${esc(m.capa)}" alt="">` : ""}<span><strong>${esc(m.titulo)}</strong><br><small>${esc(rotulo)}</small></span><button type="button" class="btn-icon" id="com-tirar-midia"><i class="fas fa-times"></i></button></div>`;
+        fecharPaineis();
+    }
+
+    /* ---------- MINI BUSCA NO YOUTUBE ---------- */
+    C.ytResultados = [];
+    async function buscarYoutube() {
+        const termo = $("com-yt-termo").value.trim(), el = $("com-yt-resultados");
+        if (!termo) return;
+        el.innerHTML = `<p class="com-vazio"><i class="fas fa-spinner fa-spin"></i> Buscando...</p>`;
+        try {
+            const chave = (typeof CONFIG !== "undefined" && CONFIG.YT_API_KEY) || YT_API_KEY_GLOBAL;
+            const r = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=15&q=${encodeURIComponent(termo)}&key=${chave}`);
+            const j = await r.json();
+            if (!r.ok) throw new Error((j.error && j.error.message) || "Erro na busca");
+            C.ytResultados = (j.items || []).filter((i) => i.id && i.id.videoId).map((i) => ({ id: i.id.videoId, titulo: i.snippet.title.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&"), canal: i.snippet.channelTitle, capa: (i.snippet.thumbnails.high || i.snippet.thumbnails.medium || i.snippet.thumbnails.default || {}).url || "" }));
+            el.innerHTML = C.ytResultados.length ? C.ytResultados.map((v, n) => `<button type="button" class="com-resultado" data-ytpick="${n}"><img src="${esc(v.capa)}" alt="" loading="lazy"><span><strong>${esc(v.titulo)}</strong><small>${esc(v.canal)}</small></span></button>`).join("") : `<p class="com-vazio">Nenhum vídeo encontrado.</p>`;
+        } catch (err) { el.innerHTML = `<p class="com-vazio">Não foi possível buscar no YouTube agora.</p>`; console.error(err); }
+    }
+
+    /* ---------- MINHAS MÍDIAS ---------- */
+    const acervo = () => (typeof database !== "undefined" && Array.isArray(database) ? database : []);
+    const limparItem = (i) => ({ "título": i["título"] || i.titulo || "", link: i.link || "", capa: i.capa || "", categoria: i.categoria || "", subcategoria: i.subcategoria || "" });
+    function buscarMinhas() {
+        const termo = ($("com-minhas-termo").value || "").trim().toLowerCase(), el = $("com-minhas-resultados"), db = acervo();
+        if (!db.length) { el.innerHTML = `<p class="com-vazio">Seu acervo está vazio.</p>`; return; }
+        const bate = (s) => !termo || String(s || "").toLowerCase().includes(termo);
+        C.minhasOpcoes = [];
+        const cats = [...new Set(db.map((i) => i.categoria).filter(Boolean))].filter(bate);
+        const subs = []; const vistos = new Set();
+        db.forEach((i) => { const k = i.categoria + "||" + i.subcategoria; if (i.subcategoria && !vistos.has(k) && bate(i.subcategoria)) { vistos.add(k); subs.push({ categoria: i.categoria, subcategoria: i.subcategoria }); } });
+        const midias = db.filter((i) => bate(i["título"]));
+        let html = "";
+        const opcao = (o, icone, sub) => { C.minhasOpcoes.push(o); return `<button type="button" class="com-resultado" data-minhapick="${C.minhasOpcoes.length - 1}">${o.capa ? `<img src="${esc(o.capa)}" alt="" loading="lazy">` : `<span class="com-res-icone"><i class="${icone}"></i></span>`}<span><strong>${esc(o.titulo)}</strong><small>${esc(sub)}</small></span></button>`; };
+        if (cats.length) { html += `<div class="com-res-grupo">Categorias</div>`; cats.slice(0, 20).forEach((c) => { const itens = db.filter((i) => i.categoria === c); html += opcao({ nivel: "categoria", titulo: c, capa: (itens.find((i) => i.capa) || {}).capa || "", itens }, "fas fa-folder", `${itens.length} mídia(s)`); }); }
+        if (subs.length) { html += `<div class="com-res-grupo">Subcategorias</div>`; subs.slice(0, 30).forEach((s) => { const itens = db.filter((i) => i.categoria === s.categoria && i.subcategoria === s.subcategoria); html += opcao({ nivel: "subcategoria", titulo: s.subcategoria, categoria: s.categoria, capa: (itens.find((i) => i.capa) || {}).capa || "", itens }, "fas fa-video", `${s.categoria} · ${itens.length} mídia(s)`); }); }
+        if (midias.length) { html += `<div class="com-res-grupo">Mídias</div>`; midias.slice(0, 40).forEach((m) => { html += opcao({ nivel: "midia", titulo: m["título"] || "Mídia", capa: m.capa || "", itens: [m] }, "fas fa-play-circle", `${m.categoria || ""}${m.subcategoria ? " · " + m.subcategoria : ""}`); }); }
+        el.innerHTML = html || `<p class="com-vazio">Nada encontrado no seu acervo.</p>`;
+    }
+    function escolherMinha(n) {
+        const o = C.minhasOpcoes[n]; if (!o) return;
+        const itens = o.itens.slice(0, 500).map(limparItem);
+        mostrarPrevia({ tipo: "colecao", nivel: o.nivel, titulo: o.titulo, categoria: o.categoria || (itens[0] && itens[0].categoria) || "", capa: o.capa || "", itens });
+    }
+
+    /* ---------- ASSISTIR / ADICIONAR ÀS MINHAS MÍDIAS ---------- */
+    function itensDoPost(id) {
+        const p = C.posts && C.posts[id]; if (!p || !p.midia) return [];
+        const m = p.midia;
+        if (m.tipo === "colecao") return Object.values(m.itens || {}).map(limparItem);
+        if (m.tipo === "youtube") return [{ "título": m.titulo || "Vídeo", link: `https://www.youtube.com/embed/${m.id}`, capa: m.capa || "", categoria: "Comunidade", subcategoria: "Vídeos da Comunidade" }];
+        return [];
+    }
+    function assistirPost(id) {
+        const itens = itensDoPost(id); if (!itens.length) return;
+        try { currentPlaylist = itens; fechar(); playTrack(0); }
+        catch (err) { uiAlert("Não foi possível abrir o player."); console.error(err); }
+    }
+    async function adicionarPost(id, btn) {
+        const itens = itensDoPost(id); if (!itens.length) return;
+        if (typeof database === "undefined" || typeof empurrarBancoIntegralParaServidor !== "function") { uiAlert("Não foi possível acessar suas mídias."); return; }
+        const existentes = new Set(database.map((i) => i.categoria + "||" + i.subcategoria + "||" + i.link));
+        const novos = itens.filter((i) => i.link && !existentes.has(i.categoria + "||" + i.subcategoria + "||" + i.link));
+        if (!novos.length) { uiAlert("Este conteúdo já está nas suas mídias."); return; }
+        if (!await uiConfirm(`Adicionar ${novos.length} mídia(s) às suas mídias?`)) return;
+        if (btn) btn.disabled = true;
+        const backup = database.slice();
+        try {
+            novos.forEach((i) => database.push({ ...i, categoria: i.categoria || "Comunidade", subcategoria: i.subcategoria || "Geral" }));
+            await empurrarBancoIntegralParaServidor();
+            if (typeof recarregarDadosDoBanco === "function") await recarregarDadosDoBanco();
+            uiAlert(`${novos.length} mídia(s) adicionada(s) às suas mídias!`);
+        } catch (err) { database = backup; uiAlert("Erro ao adicionar às suas mídias."); console.error(err); }
+        if (btn) btn.disabled = false;
+    }
+
+    /* ---------- FEED ---------- */
+    function embedMidia(m, postId) {
+        if (!m) return "";
+        if (m.tipo === "youtube") return `<div class="com-post-video"><iframe src="https://www.youtube.com/embed/${esc(m.id)}" allowfullscreen loading="lazy"></iframe></div>
+            <div class="com-colecao-btns" style="padding:8px 0 0"><button data-addmidias="${postId}"><i class="fas fa-plus"></i> Adicionar às minhas mídias</button></div>`;
+        if (m.tipo === "colecao") {
+            const n = Object.keys(m.itens || {}).length;
+            const selo = { midia: '<i class="fas fa-play-circle"></i> Mídia', subcategoria: '<i class="fas fa-video"></i> Subcategoria', categoria: '<i class="fas fa-folder"></i> Categoria' }[m.nivel] || "Mídia";
+            return `<div class="com-colecao">
+                <div class="com-colecao-capa">${m.capa ? `<img src="${esc(m.capa)}" alt="" loading="lazy">` : ""}<span class="com-colecao-selo">${selo}</span></div>
+                <div class="com-colecao-info"><strong>${esc(m.titulo)}</strong><small>${m.nivel !== "midia" ? `${n} mídia(s)` : ""}${m.nivel === "subcategoria" && m.categoria ? ` · ${esc(m.categoria)}` : ""}</small></div>
+                <div class="com-colecao-btns"><button class="principal" data-assistir="${postId}"><i class="fas fa-play"></i> Assistir</button><button data-addmidias="${postId}"><i class="fas fa-plus"></i> Adicionar às minhas mídias</button></div>
+            </div>`;
+        }
+        if (m.tipo === "imagem") return `<img class="com-post-img" src="${esc(m.url)}" alt="Imagem do post" loading="lazy">`;
+        const yt = (m.url || "").match(/(?:youtu\.be\/|v=|shorts\/|embed\/)([\w-]{11})/);
+        if (yt) return `<div class="com-post-video"><iframe src="https://www.youtube.com/embed/${yt[1]}" allowfullscreen loading="lazy"></iframe></div>`;
+        if (/\.(mp4|webm|ogg)(\?|$)/i.test(m.url)) return `<video class="com-post-img" src="${esc(m.url)}" controls></video>`;
+        if (/\.(jpe?g|png|gif|webp)(\?|$)/i.test(m.url)) return `<img class="com-post-img" src="${esc(m.url)}" alt="" loading="lazy">`;
+        return `<a class="com-post-link" href="${esc(m.url)}" target="_blank" rel="noopener"><i class="fas fa-link"></i> ${esc(m.url)}</a>`;
+    }
+
+    function renderFeed() {
+        const lista = Object.entries(C.posts || {}).sort((a, b) => b[1].criado - a[1].criado);
+        const el = $("com-feed-lista");
+        if (!lista.length) { el.innerHTML = `<p class="com-vazio">Nenhuma publicação ainda. Seja o primeiro a compartilhar algo!</p>`; return; }
+        el.innerHTML = lista.map(([id, p]) => {
+            const autor = C.perfis[p.uid] || {};
+            const curtidas = p.curtidas ? Object.keys(p.curtidas).length : 0;
+            const curti = p.curtidas && p.curtidas[C.uid];
+            const coments = Object.entries(p.comentarios || {}).sort((a, b) => a[1].criado - b[1].criado);
+            return `<article class="com-post">
+                <header class="com-post-head">
+                    <img class="com-avatar" src="${esc(avatar(autor))}" alt="">
+                    <div><strong>${esc(autor.nome || "Usuário")}</strong><small>${tempo(p.criado)}</small></div>
+                    ${p.uid === C.uid ? `<button class="btn-icon com-del" data-del="${id}" title="Apagar"><i class="fas fa-trash"></i></button>` : ""}
+                </header>
+                ${p.texto ? `<p class="com-post-texto">${esc(p.texto)}</p>` : ""}
+                ${embedMidia(p.midia, id)}
+                <div class="com-post-acoes">
+                    <button class="com-acao ${curti ? "ativo" : ""}" data-curtir="${id}"><i class="${curti ? "fas" : "far"} fa-heart"></i> ${curtidas || ""}</button>
+                    <span class="com-acao"><i class="far fa-comment"></i> ${coments.length || ""}</span>
+                </div>
+                <div class="com-comentarios">
+                    ${coments.map(([, c]) => `<div class="com-comentario">${avatarMini(c.uid)}<div><strong>${esc(nomeDe(c.uid))}</strong>${esc(c.texto)}</div></div>`).join("")}
+                    <form class="com-form-comentario" data-post="${id}"><input maxlength="500" placeholder="Escreva um comentário..."><button type="submit" class="btn-icon"><i class="fas fa-paper-plane"></i></button></form>
+                </div>
+            </article>`;
+        }).join("");
+    }
+
+    function comprimirImagem(arquivo) {
+        return new Promise((ok, erro) => {
+            const leitor = new FileReader();
+            leitor.onerror = erro;
+            leitor.onload = () => {
+                const img = new Image();
+                img.onerror = erro;
+                img.onload = () => {
+                    const max = 1080, f = Math.min(1, max / Math.max(img.width, img.height));
+                    const cv = document.createElement("canvas"); cv.width = img.width * f; cv.height = img.height * f;
+                    cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+                    ok(cv.toDataURL("image/jpeg", 0.72));
+                };
+                img.src = leitor.result;
+            };
+            leitor.readAsDataURL(arquivo);
+        });
+    }
+
+    async function publicar(e) {
+        e.preventDefault();
+        const texto = $("com-post-texto").value.trim();
+        const link = $("com-post-link").value.trim();
+        let midia = C.midia || (link ? { tipo: "link", url: link } : null);
+        if (midia && midia.tipo === "link") { const yt = midia.url.match(/(?:youtu\.be\/|v=|shorts\/|embed\/)([\w-]{11})/); if (yt) midia = { tipo: "youtube", id: yt[1], titulo: "Vídeo do YouTube", capa: `https://img.youtube.com/vi/${yt[1]}/hqdefault.jpg` }; }
+        if (!texto && !midia) return;
+        const btn = $("com-btn-publicar"); btn.disabled = true;
+        try {
+            await ref("posts").push({ uid: C.uid, texto: texto.slice(0, 2000), midia: midia || null, criado: firebase.database.ServerValue.TIMESTAMP });
+            $("com-form-post").reset(); C.midia = null; $("com-preview").innerHTML = ""; $("com-post-link").classList.add("hidden"); fecharPaineis();
+        } catch (err) { uiAlert("Não foi possível publicar. Verifique as regras da Comunidade no Firebase."); console.error(err); }
+        btn.disabled = false;
+    }
+
+    /* ---------- PESSOAS E AMIZADES ---------- */
+    function cartaoPessoa(uid, botoes) {
+        const p = C.perfis[uid] || {};
+        return `<div class="com-pessoa"><span class="com-avatar-wrap"><img class="com-avatar" src="${esc(avatar(p))}" alt="">${C.online && C.online[uid] ? '<i class="com-online"></i>' : ""}</span>
+            <div class="com-pessoa-info"><strong>${esc(p.nome || "Usuário")}</strong>${p.cidade ? `<small>${esc(p.cidade)}</small>` : ""}</div>
+            <div class="com-pessoa-btns">${botoes}</div></div>`;
+    }
+
+    function renderPessoas() {
+        const termo = ($("com-busca-pessoas").value || "").toLowerCase();
+        const uids = Object.keys(C.perfis).filter((u) => u !== C.uid && (C.perfis[u].nome || "").toLowerCase().includes(termo));
+        $("com-pessoas-lista").innerHTML = uids.length ? uids.map((u) => {
+            let b;
+            if (C.amigos[u]) b = `<button class="btn-success com-btn" data-chat="${u}"><i class="fas fa-comments"></i> Conversar</button>`;
+            else if (C.pedidos[u]) b = `<button class="btn-success com-btn" data-aceitar="${u}">Aceitar</button><button class="btn-default com-btn" data-recusar="${u}">Recusar</button>`;
+            else if (C.enviados[u]) b = `<button class="btn-default com-btn" data-cancelar="${u}">Pedido enviado ✕</button>`;
+            else b = `<button class="btn-primary com-btn" data-adicionar="${u}"><i class="fas fa-user-plus"></i> Adicionar</button>`;
+            return cartaoPessoa(u, b);
+        }).join("") : `<p class="com-vazio">Nenhuma pessoa encontrada.</p>`;
+    }
+
+    function renderAmigos() {
+        const ped = Object.keys(C.pedidos || {});
+        $("com-pedidos-lista").innerHTML = ped.length ? ped.map((u) => cartaoPessoa(u, `<button class="btn-success com-btn" data-aceitar="${u}">Aceitar</button><button class="btn-default com-btn" data-recusar="${u}">Recusar</button>`)).join("") : `<p class="com-vazio">Nenhum pedido pendente.</p>`;
+        const am = Object.keys(C.amigos || {});
+        $("com-amigos-lista").innerHTML = am.length ? am.map((u) => cartaoPessoa(u, `<button class="btn-success com-btn" data-chat="${u}"><i class="fas fa-comments"></i> Chat</button><button class="btn-icon com-del" data-desfazer="${u}" title="Desfazer amizade"><i class="fas fa-user-times"></i></button>`)).join("") : `<p class="com-vazio">Você ainda não tem amigos. Adicione pessoas na aba Pessoas.</p>`;
+    }
+
+    const raiz = () => C.db.ref("comunidade");
+    function adicionar(u) { const up = {}; up[`pedidos/${u}/${C.uid}`] = Date.now(); up[`enviados/${C.uid}/${u}`] = Date.now(); return raiz().update(up); }
+    function cancelar(u) { const up = {}; up[`pedidos/${u}/${C.uid}`] = null; up[`enviados/${C.uid}/${u}`] = null; return raiz().update(up); }
+    function aceitar(u) { const up = {}; up[`amigos/${C.uid}/${u}`] = true; up[`amigos/${u}/${C.uid}`] = true; up[`pedidos/${C.uid}/${u}`] = null; up[`enviados/${u}/${C.uid}`] = null; return raiz().update(up); }
+    function recusar(u) { const up = {}; up[`pedidos/${C.uid}/${u}`] = null; up[`enviados/${u}/${C.uid}`] = null; return raiz().update(up); }
+    async function desfazer(u) { if (!await uiConfirm("Desfazer amizade com " + nomeDe(u) + "? O chat será desativado.")) return; const up = {}; up[`amigos/${C.uid}/${u}`] = null; up[`amigos/${u}/${C.uid}`] = null; return raiz().update(up); }
+
+    /* ---------- CHAT AO VIVO (somente amigos) ---------- */
+    function abrirChat(u) {
+        if (!C.amigos[u]) { uiAlert("O chat só fica disponível depois que a amizade for aceita."); return; }
+        fecharChat();
+        C.chatCom = u;
+        const p = C.perfis[u] || {};
+        $("com-chat-avatar").src = avatar(p); $("com-chat-nome").textContent = p.nome || "Usuário";
+        $("com-chat").classList.remove("hidden");
+        const r = ref("chats/" + idChat(C.uid, u) + "/mensagens").limitToLast(100);
+        const fn = (s) => {
+            const msgs = Object.values(s.val() || {}).sort((a, b) => a.criado - b.criado);
+            const box = $("com-chat-msgs");
+            box.innerHTML = msgs.length ? msgs.map((m) => `<div class="com-msg ${m.de === C.uid ? "minha" : ""}"><span>${esc(m.texto)}</span><small>${tempo(m.criado || Date.now())}</small></div>`).join("") : `<p class="com-vazio">Diga olá para ${esc(p.nome || "seu amigo")}! 👋</p>`;
+            box.scrollTop = box.scrollHeight;
+        };
+        r.on("value", fn); C.ouvinteChat = () => r.off("value", fn);
+        setTimeout(() => $("com-chat-input").focus(), 50);
+    }
+    function fecharChat() { if (C.ouvinteChat) C.ouvinteChat(); C.ouvinteChat = null; C.chatCom = null; $("com-chat")?.classList.add("hidden"); }
+    function enviarMsg(e) {
+        e.preventDefault();
+        const inp = $("com-chat-input"), texto = inp.value.trim();
+        if (!texto || !C.chatCom) return;
+        if (!C.amigos[C.chatCom]) { uiAlert("Vocês não são mais amigos."); fecharChat(); return; }
+        inp.value = "";
+        ref("chats/" + idChat(C.uid, C.chatCom) + "/mensagens").push({ de: C.uid, para: C.chatCom, texto: texto.slice(0, 1000), criado: firebase.database.ServerValue.TIMESTAMP }).catch((err) => { uiAlert("Mensagem não enviada."); console.error(err); });
+    }
+
+    /* ---------- EVENTOS ---------- */
+    let ligado = false; // declarado antes de ligar() para evitar erro de inicialização
+    document.addEventListener("DOMContentLoaded", ligar);
+    if (document.readyState !== "loading") ligar();
+    function ligar() {
+        if (ligado || !$("comunidade-screen")) return; ligado = true;
+        document.querySelectorAll(".btn-comunidade-trigger").forEach((b) => b.addEventListener("click", abrir));
+        $("com-fechar").addEventListener("click", fechar);
+        document.querySelectorAll(".com-tab").forEach((t) => t.addEventListener("click", () => trocarAba(t.dataset.aba)));
+        $("com-form-post").addEventListener("submit", publicar);
+        $("com-btn-link").addEventListener("click", () => { fecharPaineis(); $("com-post-link").classList.toggle("hidden"); });
+        $("com-btn-emoji").addEventListener("click", () => { montarEmojis(); alternarPainel("com-emojis"); });
+        $("com-emojis").addEventListener("click", (e) => { const b = e.target.closest("[data-emoji]"); if (b) inserirEmoji(b.dataset.emoji); });
+        $("com-btn-yt").addEventListener("click", () => { if (alternarPainel("com-yt-painel")) $("com-yt-termo").focus(); });
+        $("com-yt-buscar").addEventListener("click", buscarYoutube);
+        $("com-yt-termo").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); buscarYoutube(); } });
+        $("com-yt-resultados").addEventListener("click", (e) => { const b = e.target.closest("[data-ytpick]"); if (!b) return; const v = C.ytResultados[+b.dataset.ytpick]; if (v) mostrarPrevia({ tipo: "youtube", id: v.id, titulo: v.titulo, capa: v.capa }); });
+        $("com-btn-minhas").addEventListener("click", () => { if (alternarPainel("com-minhas-painel")) { buscarMinhas(); $("com-minhas-termo").focus(); } });
+        $("com-minhas-termo").addEventListener("input", buscarMinhas);
+        $("com-minhas-termo").addEventListener("keydown", (e) => { if (e.key === "Enter") e.preventDefault(); });
+        $("com-minhas-resultados").addEventListener("click", (e) => { const b = e.target.closest("[data-minhapick]"); if (b) escolherMinha(+b.dataset.minhapick); });
+        $("com-arquivo").addEventListener("change", async (e) => {
+            const f = e.target.files[0]; if (!f) return;
+            if (!f.type.startsWith("image/")) { uiAlert("Envie uma imagem. Para vídeos, cole o link (YouTube, MP4...)."); return; }
+            try { C.midia = { tipo: "imagem", url: await comprimirImagem(f) }; $("com-preview").innerHTML = `<img src="${C.midia.url}" alt=""><button type="button" class="btn-icon" id="com-tirar-midia"><i class="fas fa-times"></i></button>`; }
+            catch (err) { uiAlert("Não foi possível ler a imagem."); }
+            e.target.value = "";
+        });
+        $("com-preview").addEventListener("click", (e) => { if (e.target.closest("#com-tirar-midia")) { C.midia = null; $("com-preview").innerHTML = ""; } });
+        $("com-busca-pessoas").addEventListener("input", renderPessoas);
+        $("com-chat-fechar").addEventListener("click", fecharChat);
+        $("com-chat-form").addEventListener("submit", enviarMsg);
+        $("comunidade-screen").addEventListener("submit", (e) => {
+            const f = e.target.closest(".com-form-comentario"); if (!f) return;
+            e.preventDefault(); const inp = f.querySelector("input"), t = inp.value.trim(); if (!t) return;
+            ref("posts/" + f.dataset.post + "/comentarios").push({ uid: C.uid, texto: t.slice(0, 500), criado: firebase.database.ServerValue.TIMESTAMP }); inp.value = "";
+        });
+        $("comunidade-screen").addEventListener("click", async (e) => {
+            const b = e.target.closest("button"); if (!b) return; const d = b.dataset;
+            if (d.assistir) assistirPost(d.assistir);
+            else if (d.addmidias) adicionarPost(d.addmidias, b);
+            else if (d.adicionar) adicionar(d.adicionar);
+            else if (d.cancelar) cancelar(d.cancelar);
+            else if (d.aceitar) aceitar(d.aceitar);
+            else if (d.recusar) recusar(d.recusar);
+            else if (d.desfazer) desfazer(d.desfazer);
+            else if (d.chat) abrirChat(d.chat);
+            else if (d.curtir) { const r = ref(`posts/${d.curtir}/curtidas/${C.uid}`); (C.posts[d.curtir].curtidas || {})[C.uid] ? r.remove() : r.set(true); }
+            else if (d.del && await uiConfirm("Apagar esta publicação?")) ref("posts/" + d.del).remove();
+        });
+        firebase.auth().onAuthStateChanged(iniciar);
+    }
 })();
